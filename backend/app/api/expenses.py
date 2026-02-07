@@ -214,7 +214,7 @@ async def confirm_expenses(
             detail="One or more draft expenses were not found for this household.",
         )
 
-    now = datetime.now(UTC)
+    now = datetime.now(UTC).replace(tzinfo=None)
     for expense in draft_expenses:
         update = expense_updates[expense.id]
 

@@ -124,7 +124,7 @@ async def update_household_llm_setting(
     setting.timezone = timezone.strip()
     if api_key is not None and api_key.strip():
         setting.api_key_encrypted = encrypt_secret(api_key.strip())
-    setting.updated_at = datetime.now(UTC)
+    setting.updated_at = datetime.now(UTC).replace(tzinfo=None)
     session.add(setting)
     await session.commit()
     await session.refresh(setting)
