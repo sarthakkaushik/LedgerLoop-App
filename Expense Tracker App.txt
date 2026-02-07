@@ -1,0 +1,119 @@
+Goal: Build a "Chat-First" Family Expense Tracker MVP. Target Audience: A couple (Husband & Wife) who want to track shared expenses via a simple chat interface.
+
+1. Tech Stack Requirements
+Backend: Python (FastAPI) - robust, async support.
+
+Database: SQLite (local file) using SQLModel (for Pydantic/SQLAlchemy synergy).
+
+Frontend:  a good simple React/Tailwind interface.
+
+AI/LLM: OpenAI API (GPT-4o-mini) or Gemini API (Flash) for parsing text and generating insights.
+
+Authentication: JWT-based auth (OAuth2PasswordBearer).
+
+2. Core Product Logic (The "Family" Architecture)
+The app must support a multi-tenant architecture where a "Household" is the tenant.
+
+The Household: A user belongs to one Household.
+
+Data Isolation: All expense queries MUST be filtered by household_id.
+
+Invites: The Primary User (Admin) creates the household and generates an invite code/link for the Secondary User (Spouse).
+
+3. Database Schema (SQLModel)
+Create the following tables with relationships:
+
+User Table:
+
+id, email, hashed_password, full_name.
+
+household_id (Foreign Key to Household).
+
+Household Table:
+
+id, name (e.g., "The Sharma Family").
+
+created_at.
+
+Expense Table:
+
+id, amount (Float), currency (Default "INR").
+
+category (String - e.g., Food, Travel, Bills).
+
+description (String - original text or summarized).
+
+is_recurring (Boolean - default False).
+
+logged_by_user_id (Foreign Key).
+
+household_id (Foreign Key).
+
+date_incurred (DateTime).
+
+4. Key Features & Implementation Details
+Feature A: The "Ingestion" Engine (Chat Interface)
+User Action: User types: "Bought groceries for 500 and paid 1200 for electricity bill." System Logic:
+
+LLM Parsing: Send the text to the LLM with a system prompt to extract structured data.
+
+System Prompt: "Extract a list of expenses. Return JSON with fields: amount, currency, category (infer from context), item_name, date. If date is missing, use today."
+
+Clarification Loop (Human-in-the-Loop):
+
+Before saving to DB, return the structured JSON to the UI.
+
+UI: Show a "Confirm" button or an "Edit" option.
+
+Why: To prevent LLM hallucinations (e.g., misinterpreting "500" as quantity instead of price).
+
+Feature B: Smart Analytics (Text-to-SQL) PLEASE the best approach to build this 
+User Action: User asks: "How much did we spend on dining out last month?" System Logic:
+
+RAG / Context: Fetch the database schema (table names, column names) relevant to Expense.
+
+Query Generation: Use the LLM to convert the natural language question into a safe SQL Query (read-only).
+
+Constraint: Ensure the SQL query includes WHERE household_id = X.
+
+Execution: Run the query against SQLite and return the raw data.
+
+Synthesis: Pass raw data back to LLM to generate a conversational summary (e.g., "You spent ₹4,500 on dining out in January, which is 10% higher than December.")
+
+Feature C: Visual Dashboard
+Monthly /Daily Burn Rate: Bar chart showing total spend per month.
+
+Category Split: Pie chart (Food vs. Travel vs. Rent).
+
+User Split: Who is spending more? (Husband vs. Wife).
+
+Feature D: Recurring Expenses (Automation)
+Allow users to mark an expense as "Recurring" (e.g., Rent).
+
+Create a backend utility that checks for recurring items on the 1st of the month and auto-creates a "Draft" expense for approval.
+
+5. API Structure (FastAPI)
+POST /auth/register: Create user & new household.
+
+POST /auth/invite: Generate code for spouse.
+
+POST /expenses/log: Input natural language string -> Return parsed JSON (Draft).
+
+POST /expenses/confirm: Save parsed JSON to DB.
+
+POST /analysis/ask: Input natural language question -> Return text answer + chart data.
+
+GET /expenses/dashboard: Return aggregated stats for the current month.
+
+6. Step-by-Step Implementation Plan
+Setup: Initialize FastAPI project with SQLModel and SQLite.
+
+Auth: Implement User and Household registration logic.
+
+Parser: Create the LLM service to parse natural language into Pydantic models.
+
+Database: Create the CRUD operations for Expenses, ensuring household_id checks are enforced.
+
+Analyst: Implement the Text-to-SQL logic for the "Chat with Data" feature.
+
+Frontend: Build the React UI to consume these endpoints.
