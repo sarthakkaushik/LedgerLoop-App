@@ -6,6 +6,10 @@ from sqlalchemy import Column, String
 from sqlmodel import Field, SQLModel
 
 
+def utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 class LLMProvider(str, Enum):
     MOCK = "mock"
     OPENAI = "openai"
@@ -29,5 +33,5 @@ class LLMSetting(SQLModel, table=True):
     )
     timezone: str = Field(sa_column=Column(String(64), nullable=False, default="UTC"))
     api_key_encrypted: str | None = Field(default=None, max_length=1024)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), nullable=False)
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC), nullable=False)
+    created_at: datetime = Field(default_factory=utc_now_naive, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now_naive, nullable=False)

@@ -7,6 +7,10 @@ from sqlalchemy import Column, String
 from sqlmodel import Field, SQLModel
 
 
+def utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 class UserRole(str, Enum):
     ADMIN = "admin"
     MEMBER = "member"
@@ -25,6 +29,6 @@ class User(SQLModel, table=True):
     role: UserRole = Field(default=UserRole.MEMBER, nullable=False)
     is_active: bool = Field(default=True, nullable=False)
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
+        default_factory=utc_now_naive,
         nullable=False,
     )

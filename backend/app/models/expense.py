@@ -6,6 +6,10 @@ from sqlalchemy import Column, String
 from sqlmodel import Field, SQLModel
 
 
+def utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 class ExpenseStatus(str, Enum):
     DRAFT = "draft"
     CONFIRMED = "confirmed"
@@ -34,5 +38,5 @@ class Expense(SQLModel, table=True):
     idempotency_key: str | None = Field(
         sa_column=Column(String(120), nullable=True, index=True)
     )
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), nullable=False)
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC), nullable=False)
+    created_at: datetime = Field(default_factory=utc_now_naive, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now_naive, nullable=False)
