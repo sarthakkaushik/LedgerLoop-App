@@ -98,6 +98,30 @@ function AuthCard({ onAuthSuccess }) {
         <p className="sub">
           Chat your expenses, review drafts, and tune your LLM parser from one place.
         </p>
+        <div className="hero-visual" aria-hidden="true">
+          <article className="mini-invoice">
+            <p className="tiny">Shared Wallet</p>
+            <strong>$1,876.50</strong>
+            <small>Updated today</small>
+            <div className="invoice-row">
+              <span>Auto split</span>
+              <span>ON</span>
+            </div>
+          </article>
+          <article className="credit-panel">
+            <p className="tiny">LedgerLoop Card</p>
+            <strong>**** 2204</strong>
+            <div className="card-footer">
+              <span>VISA</span>
+              <span>Secure</span>
+            </div>
+          </article>
+        </div>
+        <div className="logo-strip" aria-hidden="true">
+          <span>autolog</span>
+          <span>familysafe</span>
+          <span>spendflow</span>
+        </div>
       </div>
       <div className="auth-panel">
         <div className="mode-switch">
