@@ -1,9 +1,4 @@
-SQL_GENERATOR_SYSTEM_PROMPT = """
-You are a PostgreSQL SQL analyst for a household expense tracker.
-You must return JSON only:
-{"sql":"SELECT ...","reason":"..."}
-
-You can query only this virtual table:
+VIRTUAL_TABLE_SCHEMA = """
 household_expenses(
   expense_id text,
   household_id text,
@@ -21,28 +16,7 @@ household_expenses(
   created_at text,
   updated_at text
 )
-
-Rules:
-- Only one SELECT query (or WITH + SELECT), no semicolon.
-- Never use INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE.
-- Never use any table except household_expenses.
-- Prefer PostgreSQL-safe expressions and standard SQL.
-- Default to status='confirmed' unless user explicitly asks otherwise.
-- Keep query concise and executable.
-"""
-
-SQL_FIXER_SYSTEM_PROMPT = """
-You are a PostgreSQL SQL repair assistant.
-Return JSON only:
-{"sql":"SELECT ...","reason":"..."}
-
-Rules:
-- Keep the original user intent.
-- Fix only what is required to make SQL valid and safe.
-- Single SELECT query only (or WITH + SELECT), no semicolon.
-- Use only table household_expenses.
-- No write operations or schema operations.
-"""
+""".strip()
 
 SQL_SUMMARY_SYSTEM_PROMPT = """
 Return JSON only:
@@ -76,6 +50,49 @@ FEW_SHOT_EXAMPLES = [
 ]
 
 
+def build_sql_generator_system_prompt(live_schema: str) -> str:
+    return f"""
+You are a PostgreSQL SQL analyst for a household expense tracker.
+You must return JSON only:
+{{"sql":"SELECT ...","reason":"..."}}
+
+Live base schema from DB (read fresh for this request):
+{live_schema}
+
+Derived analytics table available to query:
+{VIRTUAL_TABLE_SCHEMA}
+
+Rules:
+- Only one SELECT query (or WITH + SELECT), no semicolon.
+- Never use INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE.
+- Never use any table except household_expenses.
+- Prefer PostgreSQL-safe expressions and standard SQL.
+- Default to status='confirmed' unless user explicitly asks otherwise.
+- Keep query concise and executable.
+""".strip()
+
+
+def build_sql_fixer_system_prompt(live_schema: str) -> str:
+    return f"""
+You are a PostgreSQL SQL repair assistant.
+Return JSON only:
+{{"sql":"SELECT ...","reason":"..."}}
+
+Live base schema from DB (read fresh for this request):
+{live_schema}
+
+Derived analytics table available to query:
+{VIRTUAL_TABLE_SCHEMA}
+
+Rules:
+- Keep the original user intent.
+- Fix only what is required to make SQL valid and safe.
+- Single SELECT query only (or WITH + SELECT), no semicolon.
+- Use only table household_expenses.
+- No write operations or schema operations.
+""".strip()
+
+
 def build_sql_generator_user_prompt(question: str) -> str:
     lines = [f"user_question: {question}", "few_shot_examples:"]
     for idx, ex in enumerate(FEW_SHOT_EXAMPLES, start=1):
@@ -105,4 +122,3 @@ def build_sql_summary_user_prompt(
         f"columns: {columns_json}\n"
         f"rows: {rows_json}"
     )
-

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TypedDict
 
 from app.services.analysis.prompts import (
-    SQL_FIXER_SYSTEM_PROMPT,
-    SQL_GENERATOR_SYSTEM_PROMPT,
     SQL_SUMMARY_SYSTEM_PROMPT,
+    build_sql_fixer_system_prompt,
     build_sql_fixer_user_prompt,
+    build_sql_generator_system_prompt,
     build_sql_generator_user_prompt,
     build_sql_summary_user_prompt,
 )
@@ -75,6 +76,9 @@ class SQLAgentRunner:
         execute_sql: Callable[[str], Awaitable[tuple[Cols, Rows]]],
         fallback_sql: Callable[[str], str],
         default_answer: Callable[[str, Cols, Rows], str],
+        model: str,
+        api_key: str | None,
+        live_schema_text: str,
     ):
         self.provider_name = provider_name.lower().strip()
         self._llm_json = llm_json
@@ -82,8 +86,23 @@ class SQLAgentRunner:
         self._execute_sql = execute_sql
         self._fallback_sql = fallback_sql
         self._default_answer = default_answer
+        self.model = model
+        self.api_key = api_key
+        self.live_schema_text = live_schema_text
 
     async def run(self, question: str, max_attempts: int = 3) -> SQLAgentResult:
+        if self.provider_name == "openai":
+            try:
+                return await self._run_openai_agents_sdk(
+                    question=question,
+                    max_attempts=max_attempts,
+                )
+            except RuntimeError:
+                # Keep service usable when SDK dependency is missing in local/dev.
+                return await self._run_sequential(
+                    question=question,
+                    max_attempts=max_attempts,
+                )
         if self.provider_name == "cerebras":
             return await self._run_langgraph(question=question, max_attempts=max_attempts)
         return await self._run_sequential(question=question, max_attempts=max_attempts)
@@ -99,13 +118,13 @@ class SQLAgentRunner:
             if idx == 1:
                 tool_trace.append("sql_generate")
                 sql_payload = await self._call_llm_json(
-                    SQL_GENERATOR_SYSTEM_PROMPT,
+                    build_sql_generator_system_prompt(self.live_schema_text),
                     build_sql_generator_user_prompt(question),
                 )
             else:
                 tool_trace.append(f"sql_fix_{idx}")
                 sql_payload = await self._call_llm_json(
-                    SQL_FIXER_SYSTEM_PROMPT,
+                    build_sql_fixer_system_prompt(self.live_schema_text),
                     build_sql_fixer_user_prompt(
                         question=question,
                         failed_sql=sql_query,
@@ -251,7 +270,7 @@ class SQLAgentRunner:
         if mode == "fix":
             trace.append(f"sql_fix_{attempt}")
             payload = await self._call_llm_json(
-                SQL_FIXER_SYSTEM_PROMPT,
+                build_sql_fixer_system_prompt(self.live_schema_text),
                 build_sql_fixer_user_prompt(
                     question=question,
                     failed_sql=str(state.get("fix_from_sql", "")),
@@ -261,7 +280,7 @@ class SQLAgentRunner:
         else:
             trace.append("sql_generate")
             payload = await self._call_llm_json(
-                SQL_GENERATOR_SYSTEM_PROMPT,
+                build_sql_generator_system_prompt(self.live_schema_text),
                 build_sql_generator_user_prompt(question),
             )
 
@@ -400,6 +419,146 @@ class SQLAgentRunner:
         system_text, user_text = _render_with_langchain(system_prompt, user_prompt)
         return await self._llm_json(system_text, user_text)
 
+    async def _run_openai_agents_sdk(
+        self,
+        *,
+        question: str,
+        max_attempts: int,
+    ) -> SQLAgentResult:
+        try:
+            from agents import Agent, Runner
+            from pydantic import BaseModel
+        except Exception as exc:  # pragma: no cover - dependency runtime path
+            raise RuntimeError(
+                "OpenAI Agents SDK is required for openai provider orchestration. "
+                "Install openai-agents and openai."
+            ) from exc
+
+        if self.api_key:
+            os.environ["OPENAI_API_KEY"] = self.api_key
+
+        class _SQLPayload(BaseModel):
+            sql: str
+            reason: str | None = None
+
+        class _SummaryPayload(BaseModel):
+            answer: str
+
+        generator_agent = Agent(
+            name="sql_generator",
+            instructions=build_sql_generator_system_prompt(self.live_schema_text),
+            model=self.model,
+            output_type=_SQLPayload,
+        )
+        fixer_agent = Agent(
+            name="sql_fixer",
+            instructions=build_sql_fixer_system_prompt(self.live_schema_text),
+            model=self.model,
+            output_type=_SQLPayload,
+        )
+        summary_agent = Agent(
+            name="sql_summarizer",
+            instructions=SQL_SUMMARY_SYSTEM_PROMPT,
+            model=self.model,
+            output_type=_SummaryPayload,
+        )
+
+        attempts: list[SQLAgentAttempt] = []
+        tool_trace: list[str] = []
+        sql_query = ""
+        cols: Cols = []
+        rows: Rows = []
+        last_error: str | None = None
+
+        for idx in range(1, max_attempts + 1):
+            if idx == 1:
+                tool_trace.append("sql_generate")
+                response = await Runner.run(
+                    generator_agent,
+                    build_sql_generator_user_prompt(question),
+                )
+            else:
+                tool_trace.append(f"sql_fix_{idx}")
+                response = await Runner.run(
+                    fixer_agent,
+                    build_sql_fixer_user_prompt(
+                        question=question,
+                        failed_sql=sql_query,
+                        db_error=last_error or "unknown execution error",
+                    ),
+                )
+
+            payload = _agent_output_to_dict(response.final_output)
+            sql_query = str(payload.get("sql", "")).strip()
+            llm_reason = str(payload.get("reason", "")).strip() or None
+            if not sql_query:
+                sql_query = self._fallback_sql(question)
+
+            tool_trace.append("sql_validate")
+            validation_ok, validation_reason = self._validate_sql(sql_query)
+
+            execution_ok = False
+            db_error: str | None = None
+            if validation_ok:
+                tool_trace.append("sql_execute")
+                try:
+                    cols, rows = await self._execute_sql(sql_query)
+                    execution_ok = True
+                except Exception as exc:  # pragma: no cover - backend/runtime dependent
+                    db_error = str(exc)
+                    last_error = db_error
+            else:
+                db_error = validation_reason
+                last_error = validation_reason
+
+            attempts.append(
+                SQLAgentAttempt(
+                    attempt_number=idx,
+                    generated_sql=sql_query,
+                    llm_reason=llm_reason,
+                    validation_ok=validation_ok,
+                    validation_reason=validation_reason if not validation_ok else None,
+                    execution_ok=execution_ok,
+                    db_error=db_error if not execution_ok else None,
+                )
+            )
+            if execution_ok:
+                tool_trace.append("answer_summarize")
+                summary_res = await Runner.run(
+                    summary_agent,
+                    build_sql_summary_user_prompt(
+                        question=question,
+                        sql_query=sql_query,
+                        columns_json=json.dumps(cols),
+                        rows_json=json.dumps(rows[:30]),
+                    ),
+                )
+                summary_payload = _agent_output_to_dict(summary_res.final_output)
+                answer = str(summary_payload.get("answer", "")).strip()
+                if not answer:
+                    answer = self._default_answer(question, cols, rows)
+                return SQLAgentResult(
+                    success=True,
+                    final_sql=sql_query,
+                    answer=answer,
+                    attempts=attempts,
+                    columns=cols,
+                    rows=rows,
+                    tool_trace=tool_trace,
+                )
+
+        failure_reason = attempts[-1].db_error if attempts else "No SQL attempt executed."
+        return SQLAgentResult(
+            success=False,
+            final_sql=sql_query,
+            answer=f"SQL execution failed after {max_attempts} attempt(s): {failure_reason}",
+            attempts=attempts,
+            columns=[],
+            rows=[],
+            tool_trace=tool_trace,
+            failure_reason=failure_reason,
+        )
+
 
 def _render_with_langchain(system_prompt: str, user_prompt: str) -> tuple[str, str]:
     try:
@@ -416,3 +575,25 @@ def _render_with_langchain(system_prompt: str, user_prompt: str) -> tuple[str, s
     if len(messages) < 2:
         return system_prompt, user_prompt
     return str(messages[0].content), str(messages[1].content)
+
+
+def _agent_output_to_dict(output: object) -> dict:
+    if output is None:
+        return {}
+    if isinstance(output, dict):
+        return output
+    if hasattr(output, "model_dump"):
+        try:
+            dumped = output.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            return {}
+    if isinstance(output, str):
+        try:
+            parsed = json.loads(output)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}

@@ -21,6 +21,8 @@ dependencies = [
   "langchain>=0.3.26",
   "langgraph>=0.2.34",
   "sqlglot>=25.34.1",
+  "openai>=1.109.1",
+  "openai-agents>=0.2.7",
   "ipykernel>=7.2.0",
   "python-dotenv>=1.2.1",
 ]

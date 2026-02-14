@@ -29,6 +29,7 @@ from app.services.analysis.logging_service import (
     create_query_log,
     finalize_query_log,
 )
+from app.services.analysis.schema_introspection import load_live_schema_text
 from app.services.analysis.sql_agent import SQLAgentResult, SQLAgentRunner
 from app.services.analysis.sql_validation import validate_safe_sql
 from app.services.llm.settings_service import (
@@ -456,6 +457,8 @@ async def _run_sql_agent(
     household_id: UUID,
     question: str,
 ) -> SQLAgentResult:
+    live_schema_text = await load_live_schema_text(session)
+
     async def llm_callback(system_prompt: str, user_prompt: str) -> dict | None:
         return await _llm_json(
             runtime.provider,
@@ -475,6 +478,9 @@ async def _run_sql_agent(
         execute_sql=execute_sql,
         fallback_sql=_fallback_sql,
         default_answer=_default_answer,
+        model=runtime.model,
+        api_key=runtime.api_key,
+        live_schema_text=live_schema_text,
     )
     return await runner.run(question, max_attempts=3)
 
