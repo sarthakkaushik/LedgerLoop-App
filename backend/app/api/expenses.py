@@ -1,9 +1,12 @@
 from collections import defaultdict
+import csv
 from datetime import UTC, date, datetime, timedelta
+import io
 from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -74,6 +77,26 @@ def _to_expense_feed_item(expense: Expense, logged_by_name: str) -> ExpenseFeedI
         created_at=expense.created_at.isoformat(),
         updated_at=expense.updated_at.isoformat(),
     )
+
+
+def _build_expense_filters(
+    household_id: UUID,
+    status_filter: Literal["confirmed", "draft", "all"],
+) -> list:
+    filters = [Expense.household_id == household_id]
+    if status_filter != "all":
+        filters.append(Expense.status == ExpenseStatus(status_filter))
+    return filters
+
+
+async def _resolve_user_names(
+    session: AsyncSession,
+    user_ids: set[UUID],
+) -> dict[UUID, str]:
+    if not user_ids:
+        return {}
+    users_result = await session.execute(select(User).where(User.id.in_(list(user_ids))))
+    return {member.id: member.full_name for member in users_result.scalars().all()}
 
 
 def _first_day_of_month(value: date) -> date:
@@ -281,9 +304,7 @@ async def list_expenses(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ExpenseFeedResponse:
-    filters = [Expense.household_id == user.household_id]
-    if status_filter != "all":
-        filters.append(Expense.status == ExpenseStatus(status_filter))
+    filters = _build_expense_filters(user.household_id, status_filter)
 
     list_result = await session.execute(
         select(Expense)
@@ -294,13 +315,7 @@ async def list_expenses(
     expenses = list_result.scalars().all()
 
     user_ids = {expense.logged_by_user_id for expense in expenses}
-    user_names: dict[UUID, str] = {}
-    if user_ids:
-        users_result = await session.execute(select(User).where(User.id.in_(list(user_ids))))
-        user_names = {
-            member.id: member.full_name
-            for member in users_result.scalars().all()
-        }
+    user_names = await _resolve_user_names(session, user_ids)
 
     total_result = await session.execute(
         select(func.count())
@@ -318,6 +333,74 @@ async def list_expenses(
             for expense in expenses
         ],
         total_count=total_count,
+    )
+
+
+@router.get("/export.csv")
+async def export_expenses_csv(
+    status_filter: Literal["confirmed", "draft", "all"] = Query(
+        default="confirmed",
+        alias="status",
+    ),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    filters = _build_expense_filters(user.household_id, status_filter)
+    list_result = await session.execute(
+        select(Expense)
+        .where(*filters)
+        .order_by(Expense.date_incurred.desc(), Expense.created_at.desc())
+    )
+    expenses = list_result.scalars().all()
+    user_names = await _resolve_user_names(
+        session,
+        {expense.logged_by_user_id for expense in expenses},
+    )
+
+    csv_buffer = io.StringIO(newline="")
+    writer = csv.writer(csv_buffer)
+    writer.writerow(
+        [
+            "expense_id",
+            "date_incurred",
+            "logged_by",
+            "status",
+            "category",
+            "description",
+            "merchant_or_item",
+            "amount",
+            "currency",
+            "is_recurring",
+            "confidence",
+            "created_at",
+            "updated_at",
+        ]
+    )
+
+    for expense in expenses:
+        writer.writerow(
+            [
+                str(expense.id),
+                str(expense.date_incurred),
+                user_names.get(expense.logged_by_user_id, "Unknown"),
+                expense.status.value,
+                expense.category or "",
+                expense.description or "",
+                expense.merchant_or_item or "",
+                "" if expense.amount is None else f"{float(expense.amount):.2f}",
+                expense.currency,
+                "true" if expense.is_recurring else "false",
+                f"{float(expense.confidence):.2f}",
+                expense.created_at.isoformat(),
+                expense.updated_at.isoformat(),
+            ]
+        )
+
+    filename = f"expenses_{status_filter}_{datetime.now(UTC).date().isoformat()}.csv"
+    return Response(
+        content=csv_buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

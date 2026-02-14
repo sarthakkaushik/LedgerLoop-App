@@ -1,4 +1,6 @@
+import csv
 from datetime import date
+import io
 
 import pytest
 from httpx import AsyncClient
@@ -95,6 +97,12 @@ async def test_expense_list_requires_auth(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_expense_export_requires_auth(client: AsyncClient) -> None:
+    response = await client.get("/expenses/export.csv")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_expense_list_is_household_scoped_with_logged_by(client: AsyncClient) -> None:
     from app.main import app
 
@@ -156,6 +164,84 @@ async def test_expense_list_is_household_scoped_with_logged_by(client: AsyncClie
         assert "spouse" in names
         assert "other.list" not in names
         assert all(item["status"] == "confirmed" for item in payload["items"])
+    finally:
+        app.dependency_overrides.pop(get_expense_parser, None)
+
+
+@pytest.mark.asyncio
+async def test_expense_export_csv_respects_filter_and_household(client: AsyncClient) -> None:
+    from app.main import app
+
+    app.dependency_overrides[get_expense_parser] = lambda: FakeParser()
+    try:
+        admin_token = await register_user(client, "admin.csv@example.com", "Family CSV A")
+        invite_res = await client.post(
+            "/auth/invite",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert invite_res.status_code == 200
+        spouse_token = await join_household(
+            client,
+            invite_code=invite_res.json()["invite_code"],
+            email="spouse.csv@example.com",
+        )
+        other_token = await register_user(client, "other.csv@example.com", "Family CSV B")
+
+        today = date.today()
+        await log_and_confirm_expense(
+            client,
+            admin_token,
+            "Admin csv groceries",
+            amount=300.0,
+            category="Groceries",
+            date_incurred=today,
+            idempotency_key="csv-admin-1",
+        )
+        await log_and_confirm_expense(
+            client,
+            spouse_token,
+            "Spouse csv bills",
+            amount=500.0,
+            category="Bills",
+            date_incurred=today,
+            idempotency_key="csv-spouse-1",
+        )
+        await log_and_confirm_expense(
+            client,
+            other_token,
+            "Other csv travel",
+            amount=999.0,
+            category="Travel",
+            date_incurred=today,
+            idempotency_key="csv-other-1",
+        )
+        draft_res = await client.post(
+            "/expenses/log",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"text": "Draft csv expense"},
+        )
+        assert draft_res.status_code == 200
+
+        confirmed_export = await client.get(
+            "/expenses/export.csv?status=confirmed",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert confirmed_export.status_code == 200
+        assert "text/csv" in confirmed_export.headers.get("content-type", "")
+        assert "attachment;" in confirmed_export.headers.get("content-disposition", "")
+        confirmed_rows = list(csv.DictReader(io.StringIO(confirmed_export.text)))
+        assert len(confirmed_rows) == 2
+        assert {row["status"] for row in confirmed_rows} == {"confirmed"}
+        assert "other.csv" not in {row["logged_by"] for row in confirmed_rows}
+
+        all_export = await client.get(
+            "/expenses/export.csv?status=all",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert all_export.status_code == 200
+        all_rows = list(csv.DictReader(io.StringIO(all_export.text)))
+        assert len(all_rows) == 3
+        assert {row["status"] for row in all_rows} == {"confirmed", "draft"}
     finally:
         app.dependency_overrides.pop(get_expense_parser, None)
 

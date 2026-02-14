@@ -5,11 +5,24 @@ function getApiBaseUrl() {
   return configured.trim().replace(/\/+$/, "");
 }
 
+function parseErrorPayload(data) {
+  const message = data?.detail || data?.message || "Request failed";
+  return typeof message === "string" ? message : JSON.stringify(message);
+}
+
+function parseDownloadFilename(contentDisposition) {
+  if (!contentDisposition) return "expenses.csv";
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1]);
+  const basicMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i);
+  if (basicMatch?.[1]) return basicMatch[1];
+  return "expenses.csv";
+}
+
 async function parseResponse(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = data?.detail || data?.message || "Request failed";
-    throw new Error(typeof message === "string" ? message : JSON.stringify(message));
+    throw new Error(parseErrorPayload(data));
   }
   return data;
 }
@@ -87,4 +100,27 @@ export async function askAnalysis(token, text) {
     token,
     body: { text },
   });
+}
+
+export async function downloadExpenseCsv(token, { status = "confirmed" } = {}) {
+  const search = new URLSearchParams({ status });
+  const response = await fetch(`${getApiBaseUrl()}/expenses/export.csv?${search.toString()}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(parseErrorPayload(data));
+  }
+
+  const blob = await response.blob();
+  const filename = parseDownloadFilename(response.headers.get("Content-Disposition"));
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(url);
 }

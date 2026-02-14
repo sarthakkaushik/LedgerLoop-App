@@ -6,6 +6,7 @@ import {
   createInviteCode,
   deleteExpense,
   deleteHouseholdMember,
+  downloadExpenseCsv,
   fetchDashboard,
   fetchExpenseFeed,
   fetchHousehold,
@@ -524,6 +525,7 @@ function HouseholdPanel({ token, user }) {
   const [inviteBusy, setInviteBusy] = useState(false);
   const [deletingMemberId, setDeletingMemberId] = useState(null);
   const [deletingExpenseId, setDeletingExpenseId] = useState(null);
+  const [downloadingCsv, setDownloadingCsv] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -621,6 +623,20 @@ function HouseholdPanel({ token, user }) {
       setError(err.message);
     } finally {
       setDeletingExpenseId(null);
+    }
+  }
+
+  async function handleDownloadCsv() {
+    setDownloadingCsv(true);
+    setError("");
+    setMessage("");
+    try {
+      await downloadExpenseCsv(token, { status: statusFilter });
+      setMessage("CSV download started.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDownloadingCsv(false);
     }
   }
 
@@ -740,14 +756,24 @@ function HouseholdPanel({ token, user }) {
           <article className="result-card household-ledger">
             <div className="row draft-header">
               <h3>Expense Ledger (Who Logged What)</h3>
-              <label>
-                Status
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                  <option value="confirmed">Confirmed</option>
-                  <option value="draft">Draft</option>
-                  <option value="all">All</option>
-                </select>
-              </label>
+              <div className="member-actions">
+                <label>
+                  Status
+                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="draft">Draft</option>
+                    <option value="all">All</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={handleDownloadCsv}
+                  disabled={downloadingCsv}
+                >
+                  {downloadingCsv ? "Downloading..." : "Download CSV"}
+                </button>
+              </div>
             </div>
             {!feed?.items?.length ? (
               <p>No expenses in this filter.</p>
