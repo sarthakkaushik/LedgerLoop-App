@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import date
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -62,7 +62,7 @@ async def get_llm_parse_context(
     _ = user
     runtime = get_env_runtime_config()
     return ParseContext(
-        reference_date=datetime.now(UTC).date(),
+        reference_date=date.today(),
         timezone=runtime.timezone,
         default_currency=runtime.default_currency,
     )

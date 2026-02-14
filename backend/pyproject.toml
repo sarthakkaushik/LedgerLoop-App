@@ -18,6 +18,11 @@ dependencies = [
   "argon2-cffi>=23.1.0",
   "email-validator>=2.2.0",
   "cerebras-cloud-sdk>=1.67.0",
+  "langchain>=0.3.26",
+  "langgraph>=0.2.34",
+  "sqlglot>=25.34.1",
+  "ipykernel>=7.2.0",
+  "python-dotenv>=1.2.1",
 ]
 
 [project.optional-dependencies]

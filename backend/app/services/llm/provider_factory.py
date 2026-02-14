@@ -4,6 +4,7 @@ from uuid import UUID
 
 from app.models.llm_setting import LLMProvider
 from app.services.llm.base import ExpenseParserProvider
+from app.services.llm.cerebras_provider import CerebrasExpenseParserProvider
 from app.services.llm.gemini_provider import GeminiExpenseParserProvider
 from app.services.llm.mock_provider import MockExpenseParserProvider
 from app.services.llm.openai_provider import OpenAIExpenseParserProvider
@@ -47,6 +48,15 @@ async def get_expense_parser_provider(
                 "Gemini API key is missing. Set GEMINI_API_KEY in backend .env."
             )
         return GeminiExpenseParserProvider(api_key=runtime.api_key, model=runtime.model)
+    if runtime.provider == LLMProvider.CEREBRAS:
+        if not runtime.api_key:
+            raise ProviderNotConfiguredError(
+                "Cerebras API key is missing. Set CEREBRAS_API_KEY in backend .env."
+            )
+        return CerebrasExpenseParserProvider(
+            api_key=runtime.api_key,
+            model=runtime.model,
+        )
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=f"Unsupported LLM provider '{runtime.provider}'",

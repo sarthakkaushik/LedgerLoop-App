@@ -24,6 +24,13 @@ from app.schemas.analysis import (
     AnalysisPoint,
     AnalysisTable,
 )
+from app.services.analysis.logging_service import (
+    add_attempt_log,
+    create_query_log,
+    finalize_query_log,
+)
+from app.services.analysis.sql_agent import SQLAgentResult, SQLAgentRunner
+from app.services.analysis.sql_validation import validate_safe_sql
 from app.services.llm.settings_service import (
     LLMRuntimeConfig,
     get_env_runtime_config,
@@ -55,65 +62,28 @@ ANALYTICS_HINTS = (
     "transport",
     "merchant",
 )
-FORBIDDEN_SQL = (
-    "insert ",
-    "update ",
-    "delete ",
-    "drop ",
-    "alter ",
-    "truncate ",
-    "create ",
-    "replace ",
-    "attach ",
-    "detach ",
-    "pragma ",
-    "vacuum ",
-    "reindex ",
-    "grant ",
-    "revoke ",
-    "copy ",
-    "execute ",
-    "information_schema",
-    "sqlite_master",
-    "pg_catalog",
-)
 HOUSEHOLD_CTE = """
 WITH household_expenses AS (
   SELECT
     CAST(e.id AS TEXT) AS expense_id,
     CAST(e.household_id AS TEXT) AS household_id,
     CAST(e.logged_by_user_id AS TEXT) AS logged_by_user_id,
-    COALESCE(u.full_name,'Unknown') AS logged_by_name,
-    e.amount AS amount,
-    e.currency AS currency,
+    COALESCE(u.full_name,'Unknown') AS logged_by,
+    e.status AS status,
     COALESCE(e.category,'Other') AS category,
     e.description AS description,
     e.merchant_or_item AS merchant_or_item,
+    e.amount AS amount,
+    e.currency AS currency,
     CAST(e.date_incurred AS TEXT) AS date_incurred,
     e.is_recurring AS is_recurring,
-    e.confidence AS confidence
+    e.confidence AS confidence,
+    CAST(e.created_at AS TEXT) AS created_at,
+    CAST(e.updated_at AS TEXT) AS updated_at
   FROM expenses e
   LEFT JOIN users u ON u.id = e.logged_by_user_id
   WHERE CAST(e.household_id AS TEXT)=:household_id
-    AND e.status='confirmed'
 )
-"""
-SQL_PROMPT = """
-You are a SQL planner. Return JSON only:
-{"sql":"SELECT ...","reason":"..."}
-Use only one table: household_expenses.
-Columns: expense_id, household_id, logged_by_user_id, logged_by_name, amount, currency, category, description, merchant_or_item, date_incurred, is_recurring, confidence.
-Rules:
-- single SELECT query only
-- no semicolon
-- no DDL or write operations
-- never use any table except household_expenses
-- for monthly trend use substr(date_incurred,1,7)
-"""
-ANSWER_PROMPT = """
-Return JSON only:
-{"answer":"...","chart_type":"bar|line|none","chart_title":"...","x_key":"...|null","y_key":"...|null"}
-Use only given query result rows and do not invent.
 """
 CHAT_PROMPT = """
 Return JSON only:
@@ -334,36 +304,21 @@ async def _fixed_trend(session: AsyncSession, hid: UUID, today: date, question: 
 
 
 def _safe_sql(query: str) -> tuple[bool, str]:
-    q = query.strip().lower()
-    if not q:
-        return False, "Empty SQL."
-    if ";" in q:
-        return False, "Semicolon not allowed."
-    if not (q.startswith("select ") or q.startswith("with ")):
-        return False, "Only SELECT allowed."
-    if "household_expenses" not in q:
-        return False, "Query must use household_expenses."
-    for token in FORBIDDEN_SQL:
-        if token in f"{q} ":
-            return False, f"Forbidden token: {token.strip()}."
-    refs = re.findall(r"\b(?:from|join)\s+([a-zA-Z_][\w\.]*)", q)
-    if any(r != "household_expenses" for r in refs):
-        return False, "Only household_expenses table is allowed."
-    return True, ""
+    return validate_safe_sql(query, allowed_tables={"household_expenses"})
 
 
 def _fallback_sql(question: str) -> str:
     q = question.lower()
     if "category" in q or "breakdown" in q:
-        return "SELECT category, ROUND(COALESCE(SUM(amount),0),2) AS total_spend, COUNT(*) AS expense_count FROM household_expenses GROUP BY category ORDER BY total_spend DESC"
+        return "SELECT category, ROUND(COALESCE(SUM(amount),0),2) AS total_spend, COUNT(*) AS expense_count FROM household_expenses WHERE status='confirmed' GROUP BY category ORDER BY total_spend DESC"
     if "who" in q or "member" in q or "spouse" in q:
-        return "SELECT logged_by_name, ROUND(COALESCE(SUM(amount),0),2) AS total_spend, COUNT(*) AS expense_count FROM household_expenses GROUP BY logged_by_name ORDER BY total_spend DESC"
+        return "SELECT logged_by, ROUND(COALESCE(SUM(amount),0),2) AS total_spend, COUNT(*) AS expense_count FROM household_expenses WHERE status='confirmed' GROUP BY logged_by ORDER BY total_spend DESC"
     if "trend" in q or "month" in q:
-        return "SELECT substr(date_incurred,1,7) AS month, ROUND(COALESCE(SUM(amount),0),2) AS total_spend FROM household_expenses GROUP BY substr(date_incurred,1,7) ORDER BY month"
+        return "SELECT substr(date_incurred,1,7) AS month, ROUND(COALESCE(SUM(amount),0),2) AS total_spend FROM household_expenses WHERE status='confirmed' GROUP BY substr(date_incurred,1,7) ORDER BY month"
     if "top" in q or "largest" in q or "highest" in q:
         top_n = _extract_int(r"top\s+(\d{1,2})", q, 5, 1, 20)
-        return f"SELECT date_incurred, amount, category, COALESCE(description, merchant_or_item, 'Expense') AS note, logged_by_name FROM household_expenses ORDER BY amount DESC LIMIT {top_n}"
-    return "SELECT COUNT(*) AS expense_count, ROUND(COALESCE(SUM(amount),0),2) AS total_spend, ROUND(COALESCE(AVG(amount),0),2) AS avg_spend FROM household_expenses"
+        return f"SELECT date_incurred, amount, category, COALESCE(description, merchant_or_item, 'Expense') AS note, logged_by FROM household_expenses WHERE status='confirmed' ORDER BY amount DESC LIMIT {top_n}"
+    return "SELECT COUNT(*) AS expense_count, ROUND(COALESCE(SUM(amount),0),2) AS total_spend, ROUND(COALESCE(AVG(amount),0),2) AS avg_spend FROM household_expenses WHERE status='confirmed'"
 
 
 async def _llm_json(provider: LLMProvider, model: str, api_key: str | None, system_prompt: str, user_prompt: str) -> dict | None:
@@ -384,6 +339,23 @@ async def _llm_json(provider: LLMProvider, model: str, api_key: str | None, syst
                 r = await c.post(url, json=payload)
                 r.raise_for_status()
                 return _extract_json(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+        if provider == LLMProvider.CEREBRAS:
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0,
+            }
+            headers = {"Authorization": f"Bearer {api_key}"}
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as c:
+                r = await c.post("https://api.cerebras.ai/v1/chat/completions", json=payload, headers=headers)
+                r.raise_for_status()
+                raw_content = r.json()["choices"][0]["message"]["content"]
+                if isinstance(raw_content, str):
+                    return _extract_json(raw_content)
+                return _extract_json(json.dumps(raw_content))
     except Exception:
         return None
     return None
@@ -403,7 +375,11 @@ def _cell(v: Any) -> str | float | int:
 
 async def _run_sql(session: AsyncSession, household_id: UUID, sql_query: str) -> tuple[list[str], list[list[str | float | int]]]:
     q = f"{HOUSEHOLD_CTE}\nSELECT * FROM (\n{sql_query}\n) AS agent_result\nLIMIT :result_limit"
-    r = await session.execute(text(q), {"household_id": str(household_id), "result_limit": 200})
+    try:
+        r = await session.execute(text(q), {"household_id": str(household_id), "result_limit": 200})
+    except Exception:
+        await session.rollback()
+        raise
     maps = r.mappings().all()
     if not maps:
         return list(r.keys()), []
@@ -473,75 +449,186 @@ async def _chat_llm_answer(runtime: LLMRuntimeConfig, question: str) -> tuple[st
     return _chat_fallback_answer(question), False
 
 
+async def _run_sql_agent(
+    *,
+    runtime: LLMRuntimeConfig,
+    session: AsyncSession,
+    household_id: UUID,
+    question: str,
+) -> SQLAgentResult:
+    async def llm_callback(system_prompt: str, user_prompt: str) -> dict | None:
+        return await _llm_json(
+            runtime.provider,
+            runtime.model,
+            runtime.api_key,
+            system_prompt,
+            user_prompt,
+        )
+
+    async def execute_sql(sql_query: str) -> tuple[list[str], list[list[str | float | int]]]:
+        return await _run_sql(session, household_id, sql_query)
+
+    runner = SQLAgentRunner(
+        provider_name=runtime.provider.value,
+        llm_json=llm_callback,
+        validate_sql=_safe_sql,
+        execute_sql=execute_sql,
+        fallback_sql=_fallback_sql,
+        default_answer=_default_answer,
+    )
+    return await runner.run(question, max_attempts=3)
+
+
 @router.post("/ask", response_model=AnalysisAskResponse)
 async def ask_analysis(payload: AnalysisAskRequest, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> AnalysisAskResponse:
     today = datetime.now(UTC).date()
     question = payload.text.strip()
     tool, conf = _fixed_tool(question)
     runtime = get_env_runtime_config()
+    initial_mode = "chat" if tool == "chat" else "analytics"
+    initial_route = "chat" if tool == "chat" else ("fixed" if tool else "agent")
+    initial_tool = tool or "adhoc_sql"
+
+    query_log = None
+    try:
+        query_log = await create_query_log(
+            session,
+            household_id=user.household_id,
+            user_id=user.id,
+            provider=runtime.provider.value,
+            model=runtime.model,
+            question=question,
+            mode=initial_mode,
+            route=initial_route,
+            tool=initial_tool,
+        )
+    except Exception:
+        await session.rollback()
+        query_log = None
+
+    async def _finish(
+        response: AnalysisAskResponse,
+        *,
+        status: str = "success",
+        failure_reason: str | None = None,
+        attempt_count: int = 0,
+    ) -> AnalysisAskResponse:
+        if query_log is not None:
+            try:
+                await finalize_query_log(
+                    session,
+                    query_log=query_log,
+                    status=status,
+                    final_answer=response.answer,
+                    attempt_count=attempt_count,
+                    final_sql=response.sql,
+                    failure_reason=failure_reason,
+                    mode=response.mode,
+                    route=response.route,
+                    tool=response.tool,
+                )
+            except Exception:
+                await session.rollback()
+        return response
 
     if tool == "chat":
         answer, via_llm = await _chat_llm_answer(runtime, question)
-        return AnalysisAskResponse(
+        return await _finish(
+            AnalysisAskResponse(
             mode="chat",
             route="chat",
             confidence=0.92 if via_llm else 0.6,
             tool="chat",
             tool_trace=["chat_llm"] if via_llm else ["chat_fallback"],
             answer=answer,
+            )
         )
     if tool == "summary":
         s, e, lbl = _period(question, today)
         d = _fixed_summary(await _confirmed(session, user.household_id, s, e), lbl)
-        return AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="summary", tool_trace=["summary"], answer=d["answer"], chart=d["chart"], table=d["table"])
+        return await _finish(
+            AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="summary", tool_trace=["summary"], answer=d["answer"], chart=d["chart"], table=d["table"])
+        )
     if tool == "category_breakdown":
         s, e, lbl = _period(question, today)
         d = _fixed_category(await _confirmed(session, user.household_id, s, e), lbl)
-        return AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="category_breakdown", tool_trace=["category_breakdown"], answer=d["answer"], chart=d["chart"], table=d["table"])
+        return await _finish(
+            AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="category_breakdown", tool_trace=["category_breakdown"], answer=d["answer"], chart=d["chart"], table=d["table"])
+        )
     if tool == "member_breakdown":
         s, e, lbl = _period(question, today)
         d = await _fixed_member(session, await _confirmed(session, user.household_id, s, e), lbl)
-        return AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="member_breakdown", tool_trace=["member_breakdown"], answer=d["answer"], chart=d["chart"], table=d["table"])
+        return await _finish(
+            AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="member_breakdown", tool_trace=["member_breakdown"], answer=d["answer"], chart=d["chart"], table=d["table"])
+        )
     if tool == "top_expenses":
         d = await _fixed_top(session, user.household_id, today, question)
-        return AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="top_expenses", tool_trace=["top_expenses"], answer=d["answer"], chart=d["chart"], table=d["table"])
+        return await _finish(
+            AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="top_expenses", tool_trace=["top_expenses"], answer=d["answer"], chart=d["chart"], table=d["table"])
+        )
     if tool == "monthly_trend":
         d = await _fixed_trend(session, user.household_id, today, question)
-        return AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="monthly_trend", tool_trace=["monthly_trend"], answer=d["answer"], chart=d["chart"], table=d["table"])
-
-    sql_payload = await _llm_json(runtime.provider, runtime.model, runtime.api_key, SQL_PROMPT, f"user_question: {question}")
-    sql_query = str(sql_payload.get("sql", "")).strip() if isinstance(sql_payload, dict) else ""
-    ok, reason = _safe_sql(sql_query)
-    if not ok:
-        sql_query = _fallback_sql(question)
-        ok, reason = _safe_sql(sql_query)
-    if not ok:
-        return AnalysisAskResponse(mode="analytics", route="agent", confidence=0.35, tool="adhoc_sql", tool_trace=["sql_generate", "sql_validate"], answer=f"Could not generate a safe SQL query: {reason}", sql=sql_query, table=AnalysisTable(columns=[], rows=[]))
+        return await _finish(
+            AnalysisAskResponse(mode="analytics", route="fixed", confidence=conf, tool="monthly_trend", tool_trace=["monthly_trend"], answer=d["answer"], chart=d["chart"], table=d["table"])
+        )
 
     try:
-        cols, rows = await _run_sql(session, user.household_id, sql_query)
+        agent_result = await _run_sql_agent(
+            runtime=runtime,
+            session=session,
+            household_id=user.household_id,
+            question=question,
+        )
     except Exception as exc:
-        return AnalysisAskResponse(mode="analytics", route="agent", confidence=0.4, tool="adhoc_sql", tool_trace=["sql_generate", "sql_validate", "sql_execute"], answer=f"SQL execution failed: {exc}", sql=sql_query, table=AnalysisTable(columns=[], rows=[]))
+        response = AnalysisAskResponse(
+            mode="analytics",
+            route="agent",
+            confidence=0.35,
+            tool="adhoc_sql",
+            tool_trace=["sql_generate", "sql_validate", "sql_execute"],
+            sql=None,
+            answer=f"SQL agent failed to run: {exc}",
+            table=AnalysisTable(columns=[], rows=[]),
+        )
+        return await _finish(
+            response,
+            status="failed",
+            failure_reason=str(exc),
+            attempt_count=0,
+        )
 
-    summary_payload = await _llm_json(
-        runtime.provider,
-        runtime.model,
-        runtime.api_key,
-        ANSWER_PROMPT,
-        f"user_question: {question}\nexecuted_sql: {sql_query}\ncolumns: {json.dumps(cols)}\nrows: {json.dumps(rows[:30])}",
-    )
-    answer = str(summary_payload.get("answer", "")).strip() if isinstance(summary_payload, dict) else ""
-    if not answer:
-        answer = _default_answer(question, cols, rows)
-    chart = _chart(question, cols, rows, summary_payload if isinstance(summary_payload, dict) else None)
-    return AnalysisAskResponse(
+    if query_log is not None:
+        for attempt in agent_result.attempts:
+            try:
+                await add_attempt_log(
+                    session,
+                    query_log=query_log,
+                    attempt_number=attempt.attempt_number,
+                    generated_sql=attempt.generated_sql,
+                    llm_reason=attempt.llm_reason,
+                    validation_ok=attempt.validation_ok,
+                    validation_reason=attempt.validation_reason,
+                    execution_ok=attempt.execution_ok,
+                    db_error=attempt.db_error,
+                )
+            except Exception:
+                await session.rollback()
+
+    chart = _chart(question, agent_result.columns, agent_result.rows, None)
+    response = AnalysisAskResponse(
         mode="analytics",
         route="agent",
-        confidence=0.78 if runtime.provider != LLMProvider.MOCK else 0.62,
+        confidence=0.82 if agent_result.success and runtime.provider != LLMProvider.MOCK else (0.62 if agent_result.success else 0.4),
         tool="adhoc_sql",
-        tool_trace=["sql_generate", "sql_validate", "sql_execute", "answer_summarize"],
-        sql=sql_query,
-        answer=answer,
+        tool_trace=agent_result.tool_trace,
+        sql=agent_result.final_sql or None,
+        answer=agent_result.answer,
         chart=chart,
-        table=AnalysisTable(columns=cols, rows=rows),
+        table=AnalysisTable(columns=agent_result.columns, rows=agent_result.rows),
+    )
+    return await _finish(
+        response,
+        status="success" if agent_result.success else "failed",
+        failure_reason=agent_result.failure_reason,
+        attempt_count=len(agent_result.attempts),
     )

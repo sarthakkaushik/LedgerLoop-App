@@ -14,6 +14,7 @@ class LLMProvider(str, Enum):
     MOCK = "mock"
     OPENAI = "openai"
     GEMINI = "gemini"
+    CEREBRAS = "cerebras"
 
 
 class LLMSetting(SQLModel, table=True):
