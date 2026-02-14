@@ -7,6 +7,8 @@ class ParseContext(BaseModel):
     reference_date: date
     timezone: str
     default_currency: str
+    household_categories: list[str] = Field(default_factory=list)
+    household_members: list[str] = Field(default_factory=list)
 
 
 class ParsedExpense(BaseModel):

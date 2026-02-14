@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from sqlalchemy import inspect
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import UUID
 
 
 async def load_live_schema_text(
@@ -34,3 +36,59 @@ async def load_live_schema_text(
         return schema_text
     return "No schema metadata available."
 
+
+async def load_household_prompt_hints(
+    session: AsyncSession,
+    *,
+    household_id: UUID,
+    limit: int = 30,
+) -> str:
+    """Load household-specific values to improve SQL grounding."""
+    params = {"household_id": str(household_id), "limit": limit}
+
+    cat_query = text(
+        """
+        SELECT DISTINCT TRIM(COALESCE(category, 'Other')) AS category
+        FROM expenses
+        WHERE CAST(household_id AS TEXT) = :household_id
+          AND category IS NOT NULL
+          AND TRIM(category) <> ''
+        ORDER BY category
+        LIMIT :limit
+        """
+    )
+    name_query = text(
+        """
+        SELECT DISTINCT TRIM(COALESCE(u.full_name, 'Unknown')) AS logged_by
+        FROM expenses e
+        LEFT JOIN users u ON u.id = e.logged_by_user_id
+        WHERE CAST(e.household_id AS TEXT) = :household_id
+        ORDER BY logged_by
+        LIMIT :limit
+        """
+    )
+    merchant_query = text(
+        """
+        SELECT DISTINCT TRIM(COALESCE(merchant_or_item, '')) AS merchant_or_item
+        FROM expenses
+        WHERE CAST(household_id AS TEXT) = :household_id
+          AND merchant_or_item IS NOT NULL
+          AND TRIM(merchant_or_item) <> ''
+        ORDER BY merchant_or_item
+        LIMIT :limit
+        """
+    )
+
+    cat_res = await session.execute(cat_query, params)
+    name_res = await session.execute(name_query, params)
+    merchant_res = await session.execute(merchant_query, params)
+
+    categories = [str(x) for x in cat_res.scalars().all() if x]
+    names = [str(x) for x in name_res.scalars().all() if x]
+    merchants = [str(x) for x in merchant_res.scalars().all() if x]
+
+    return (
+        f"Known categories in this household: {', '.join(categories) if categories else 'none'}\n"
+        f"Known household member names: {', '.join(names) if names else 'none'}\n"
+        f"Known merchant_or_item values: {', '.join(merchants) if merchants else 'none'}"
+    )

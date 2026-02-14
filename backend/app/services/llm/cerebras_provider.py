@@ -17,6 +17,8 @@ class CerebrasExpenseParserProvider(ExpenseParserProvider):
             reference_date=str(context.reference_date),
             timezone=context.timezone,
             default_currency=context.default_currency,
+            household_categories=context.household_categories,
+            household_members=context.household_members,
         )
         payload = {
             "model": self.model,
@@ -37,4 +39,3 @@ class CerebrasExpenseParserProvider(ExpenseParserProvider):
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             return parse_result_from_text(content)
-

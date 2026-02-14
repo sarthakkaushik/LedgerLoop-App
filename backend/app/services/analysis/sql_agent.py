@@ -79,6 +79,7 @@ class SQLAgentRunner:
         model: str,
         api_key: str | None,
         live_schema_text: str,
+        household_hints_text: str | None = None,
     ):
         self.provider_name = provider_name.lower().strip()
         self._llm_json = llm_json
@@ -89,6 +90,7 @@ class SQLAgentRunner:
         self.model = model
         self.api_key = api_key
         self.live_schema_text = live_schema_text
+        self.household_hints_text = household_hints_text
 
     async def run(self, question: str, max_attempts: int = 3) -> SQLAgentResult:
         if self.provider_name == "openai":
@@ -118,13 +120,19 @@ class SQLAgentRunner:
             if idx == 1:
                 tool_trace.append("sql_generate")
                 sql_payload = await self._call_llm_json(
-                    build_sql_generator_system_prompt(self.live_schema_text),
+                    build_sql_generator_system_prompt(
+                        self.live_schema_text,
+                        self.household_hints_text,
+                    ),
                     build_sql_generator_user_prompt(question),
                 )
             else:
                 tool_trace.append(f"sql_fix_{idx}")
                 sql_payload = await self._call_llm_json(
-                    build_sql_fixer_system_prompt(self.live_schema_text),
+                    build_sql_fixer_system_prompt(
+                        self.live_schema_text,
+                        self.household_hints_text,
+                    ),
                     build_sql_fixer_user_prompt(
                         question=question,
                         failed_sql=sql_query,
@@ -270,7 +278,10 @@ class SQLAgentRunner:
         if mode == "fix":
             trace.append(f"sql_fix_{attempt}")
             payload = await self._call_llm_json(
-                build_sql_fixer_system_prompt(self.live_schema_text),
+                build_sql_fixer_system_prompt(
+                    self.live_schema_text,
+                    self.household_hints_text,
+                ),
                 build_sql_fixer_user_prompt(
                     question=question,
                     failed_sql=str(state.get("fix_from_sql", "")),
@@ -280,7 +291,10 @@ class SQLAgentRunner:
         else:
             trace.append("sql_generate")
             payload = await self._call_llm_json(
-                build_sql_generator_system_prompt(self.live_schema_text),
+                build_sql_generator_system_prompt(
+                    self.live_schema_text,
+                    self.household_hints_text,
+                ),
                 build_sql_generator_user_prompt(question),
             )
 
@@ -446,13 +460,19 @@ class SQLAgentRunner:
 
         generator_agent = Agent(
             name="sql_generator",
-            instructions=build_sql_generator_system_prompt(self.live_schema_text),
+            instructions=build_sql_generator_system_prompt(
+                self.live_schema_text,
+                self.household_hints_text,
+            ),
             model=self.model,
             output_type=_SQLPayload,
         )
         fixer_agent = Agent(
             name="sql_fixer",
-            instructions=build_sql_fixer_system_prompt(self.live_schema_text),
+            instructions=build_sql_fixer_system_prompt(
+                self.live_schema_text,
+                self.household_hints_text,
+            ),
             model=self.model,
             output_type=_SQLPayload,
         )

@@ -50,7 +50,15 @@ FEW_SHOT_EXAMPLES = [
 ]
 
 
-def build_sql_generator_system_prompt(live_schema: str) -> str:
+def build_sql_generator_system_prompt(
+    live_schema: str,
+    household_hints: str | None = None,
+) -> str:
+    hint_block = (
+        f"Household value hints from live data snapshot:\n{household_hints}\n"
+        if household_hints
+        else ""
+    )
     return f"""
 You are a PostgreSQL SQL analyst for a household expense tracker.
 You must return JSON only:
@@ -59,6 +67,7 @@ You must return JSON only:
 Live base schema from DB (read fresh for this request):
 {live_schema}
 
+{hint_block}
 Derived analytics table available to query:
 {VIRTUAL_TABLE_SCHEMA}
 
@@ -67,12 +76,22 @@ Rules:
 - Never use INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE.
 - Never use any table except household_expenses.
 - Prefer PostgreSQL-safe expressions and standard SQL.
+- If the question mentions a person name, map it to column `logged_by`.
+- If the question mentions a spend type (like groceries/rent/transport), map it to `category`.
 - Default to status='confirmed' unless user explicitly asks otherwise.
 - Keep query concise and executable.
 """.strip()
 
 
-def build_sql_fixer_system_prompt(live_schema: str) -> str:
+def build_sql_fixer_system_prompt(
+    live_schema: str,
+    household_hints: str | None = None,
+) -> str:
+    hint_block = (
+        f"Household value hints from live data snapshot:\n{household_hints}\n"
+        if household_hints
+        else ""
+    )
     return f"""
 You are a PostgreSQL SQL repair assistant.
 Return JSON only:
@@ -81,6 +100,7 @@ Return JSON only:
 Live base schema from DB (read fresh for this request):
 {live_schema}
 
+{hint_block}
 Derived analytics table available to query:
 {VIRTUAL_TABLE_SCHEMA}
 

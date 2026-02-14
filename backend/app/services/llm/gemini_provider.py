@@ -17,6 +17,8 @@ class GeminiExpenseParserProvider(ExpenseParserProvider):
             reference_date=str(context.reference_date),
             timezone=context.timezone,
             default_currency=context.default_currency,
+            household_categories=context.household_categories,
+            household_members=context.household_members,
         )
         payload = {
             "contents": [

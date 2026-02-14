@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.core.db import get_session
+from app.models.expense import Expense
 from app.core.security import decode_access_token
 from app.models.user import User, UserRole
 from app.services.llm.base import ExpenseParserProvider
@@ -58,11 +59,41 @@ async def get_expense_parser(
 
 async def get_llm_parse_context(
     user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
 ) -> ParseContext:
-    _ = user
     runtime = get_env_runtime_config()
+    cat_result = await session.execute(
+        select(Expense.category).where(
+            Expense.household_id == user.household_id,
+            Expense.category.is_not(None),
+        )
+    )
+    member_result = await session.execute(
+        select(User.full_name).where(
+            User.household_id == user.household_id,
+            User.is_active == True,  # noqa: E712
+        )
+    )
+
+    categories = sorted(
+        {
+            str(value).strip()
+            for value in cat_result.scalars().all()
+            if value and str(value).strip()
+        }
+    )[:30]
+    members = sorted(
+        {
+            str(value).strip()
+            for value in member_result.scalars().all()
+            if value and str(value).strip()
+        }
+    )[:30]
+
     return ParseContext(
         reference_date=date.today(),
         timezone=runtime.timezone,
         default_currency=runtime.default_currency,
+        household_categories=categories,
+        household_members=members,
     )
