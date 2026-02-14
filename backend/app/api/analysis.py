@@ -1,10 +1,11 @@
 import json
 import re
 from collections import defaultdict
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, Depends
@@ -73,7 +74,7 @@ WITH household_expenses AS (
     CAST(e.household_id AS TEXT) AS household_id,
     CAST(e.logged_by_user_id AS TEXT) AS logged_by_user_id,
     COALESCE(u.full_name,'Unknown') AS logged_by,
-    e.status AS status,
+    CAST(e.status AS TEXT) AS status,
     COALESCE(e.category,'Other') AS category,
     e.description AS description,
     e.merchant_or_item AS merchant_or_item,
@@ -100,6 +101,35 @@ Rules:
 - Keep response concise and practical.
 """
 
+NUMBER_TOKEN_REGEX = (
+    r"(?:\d{1,2}|zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|"
+    r"nineteen|twenty)"
+)
+NUMBER_WORDS: dict[str, int] = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+}
+
 
 def _first_day_of_month(value: date) -> date:
     return value.replace(day=1)
@@ -120,7 +150,14 @@ def _extract_int(pattern: str, text_value: str, default: int, min_v: int, max_v:
     m = re.search(pattern, text_value)
     if not m:
         return default
-    return min(max(int(m.group(1)), min_v), max_v)
+    token = str(m.group(1)).strip().lower()
+    if token.isdigit():
+        value = int(token)
+    else:
+        value = NUMBER_WORDS.get(token)
+    if value is None:
+        return default
+    return min(max(value, min_v), max_v)
 
 
 def _extract_json(raw: str) -> dict | None:
@@ -189,6 +226,13 @@ def _period(text_value: str, today: date) -> tuple[date, date, str]:
         return s, _last_day_of_month(s), "Last month"
     s = _first_day_of_month(today)
     return s, _last_day_of_month(s), "This month"
+
+
+def _today_for_timezone(timezone_name: str) -> date:
+    try:
+        return datetime.now(ZoneInfo(timezone_name)).date()
+    except Exception:
+        return date.today()
 
 
 async def _confirmed(session: AsyncSession, household_id: UUID, start: date | None = None, end: date | None = None) -> list[Expense]:
@@ -264,8 +308,14 @@ async def _fixed_member(session: AsyncSession, expenses: list[Expense], label: s
 
 
 async def _fixed_top(session: AsyncSession, hid: UUID, today: date, question: str) -> dict:
-    n_months = _extract_int(r"(?:last|past)\s+(\d{1,2})\s+months?", question.lower(), 3, 1, 24)
-    n = _extract_int(r"top\s+(\d{1,2})", question.lower(), 5, 1, 20)
+    n_months = _extract_int(
+        rf"(?:last|past)\s+({NUMBER_TOKEN_REGEX})\s+months?",
+        question.lower(),
+        3,
+        1,
+        24,
+    )
+    n = _extract_int(rf"top\s+({NUMBER_TOKEN_REGEX})", question.lower(), 5, 1, 20)
     start = _shift_months(_first_day_of_month(today), -(n_months - 1))
     expenses = await _confirmed(session, hid, start, today)
     ranked = sorted([e for e in expenses if e.amount is not None], key=lambda e: float(e.amount), reverse=True)[:n]
@@ -286,7 +336,13 @@ async def _fixed_top(session: AsyncSession, hid: UUID, today: date, question: st
 
 
 async def _fixed_trend(session: AsyncSession, hid: UUID, today: date, question: str) -> dict:
-    months = _extract_int(r"(?:last|past)\s+(\d{1,2})\s+months?", question.lower(), 6, 1, 24)
+    months = _extract_int(
+        rf"(?:last|past)\s+({NUMBER_TOKEN_REGEX})\s+months?",
+        question.lower(),
+        6,
+        1,
+        24,
+    )
     first_this = _first_day_of_month(today)
     start = _shift_months(first_this, -(months - 1))
     expenses = await _confirmed(session, hid, start, today)
@@ -320,7 +376,7 @@ def _fallback_sql(question: str) -> str:
     if "trend" in q or "month" in q:
         return "SELECT substr(date_incurred,1,7) AS month, ROUND(COALESCE(SUM(amount),0),2) AS total_spend FROM household_expenses WHERE status='confirmed' GROUP BY substr(date_incurred,1,7) ORDER BY month"
     if "top" in q or "largest" in q or "highest" in q:
-        top_n = _extract_int(r"top\s+(\d{1,2})", q, 5, 1, 20)
+        top_n = _extract_int(rf"top\s+({NUMBER_TOKEN_REGEX})", q, 5, 1, 20)
         return f"SELECT date_incurred, amount, category, COALESCE(description, merchant_or_item, 'Expense') AS note, logged_by FROM household_expenses WHERE status='confirmed' ORDER BY amount DESC LIMIT {top_n}"
     return "SELECT COUNT(*) AS expense_count, ROUND(COALESCE(SUM(amount),0),2) AS total_spend, ROUND(COALESCE(AVG(amount),0),2) AS avg_spend FROM household_expenses WHERE status='confirmed'"
 
@@ -495,10 +551,10 @@ async def _run_sql_agent(
 
 @router.post("/ask", response_model=AnalysisAskResponse)
 async def ask_analysis(payload: AnalysisAskRequest, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> AnalysisAskResponse:
-    today = datetime.now(UTC).date()
+    runtime = get_env_runtime_config()
+    today = _today_for_timezone(runtime.timezone)
     question = payload.text.strip()
     tool, conf = _fixed_tool(question)
-    runtime = get_env_runtime_config()
     initial_mode = "chat" if tool == "chat" else "analytics"
     initial_route = "chat" if tool == "chat" else ("fixed" if tool else "agent")
     initial_tool = tool or "adhoc_sql"

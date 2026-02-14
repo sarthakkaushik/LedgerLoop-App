@@ -78,6 +78,8 @@ Rules:
 - Prefer PostgreSQL-safe expressions and standard SQL.
 - If the question mentions a person name, map it to column `logged_by`.
 - If the question mentions a spend type (like groceries/rent/transport), map it to `category`.
+- Respect explicit user constraints exactly (for example top N, limit N, last N days/months).
+- Do not copy numeric literals from few-shot examples unless the user asked for that same number.
 - Default to status='confirmed' unless user explicitly asks otherwise.
 - Keep query concise and executable.
 """.strip()
@@ -110,6 +112,7 @@ Rules:
 - Single SELECT query only (or WITH + SELECT), no semicolon.
 - Use only table household_expenses.
 - No write operations or schema operations.
+- Preserve explicit user constraints from the original question (top N, limit N, last N days/months).
 """.strip()
 
 

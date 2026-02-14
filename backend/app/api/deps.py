@@ -1,5 +1,6 @@
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -18,6 +19,13 @@ from app.services.llm.settings_service import (
 from app.services.llm.types import ParseContext
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+
+
+def _today_for_timezone(timezone_name: str) -> date:
+    try:
+        return datetime.now(ZoneInfo(timezone_name)).date()
+    except Exception:
+        return date.today()
 
 
 async def get_current_user(
@@ -91,7 +99,7 @@ async def get_llm_parse_context(
     )[:30]
 
     return ParseContext(
-        reference_date=date.today(),
+        reference_date=_today_for_timezone(runtime.timezone),
         timezone=runtime.timezone,
         default_currency=runtime.default_currency,
         household_categories=categories,

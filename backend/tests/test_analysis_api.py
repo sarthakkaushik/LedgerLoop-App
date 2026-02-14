@@ -4,7 +4,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.api.deps import get_expense_parser
-from app.api.analysis import _safe_sql
+from app.api.analysis import HOUSEHOLD_CTE, _safe_sql
 from app.services.llm.base import ExpenseParserProvider
 from app.services.llm.types import ParseContext, ParseResult, ParsedExpense
 
@@ -201,6 +201,67 @@ async def test_analysis_monthly_trend_returns_window(client: AsyncClient) -> Non
 
 
 @pytest.mark.asyncio
+async def test_analysis_top_expenses_respects_word_number(client: AsyncClient) -> None:
+    from app.main import app
+
+    app.dependency_overrides[get_expense_parser] = lambda: FakeParser()
+    try:
+        token = await register_user(client, "top-three@example.com", "Family Top Three")
+        today = date.today()
+        await log_and_confirm_expense(
+            client,
+            token,
+            "Expense one",
+            amount=900.0,
+            category="Shopping",
+            date_incurred=today,
+            idempotency_key="top-three-1",
+        )
+        await log_and_confirm_expense(
+            client,
+            token,
+            "Expense two",
+            amount=700.0,
+            category="Groceries",
+            date_incurred=today,
+            idempotency_key="top-three-2",
+        )
+        await log_and_confirm_expense(
+            client,
+            token,
+            "Expense three",
+            amount=500.0,
+            category="Transport",
+            date_incurred=today,
+            idempotency_key="top-three-3",
+        )
+        await log_and_confirm_expense(
+            client,
+            token,
+            "Expense four",
+            amount=300.0,
+            category="Food",
+            date_incurred=today,
+            idempotency_key="top-three-4",
+        )
+
+        response = await client.post(
+            "/analysis/ask",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"text": "Show top three expenses in last one month"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["tool"] == "top_expenses"
+        assert payload["route"] == "fixed"
+        assert len(payload["table"]["rows"]) == 3, payload
+        amounts = [row[1] for row in payload["table"]["rows"]]
+        assert amounts == sorted(amounts, reverse=True)
+    finally:
+        app.dependency_overrides.pop(get_expense_parser, None)
+
+
+@pytest.mark.asyncio
 async def test_analysis_agent_fallback_route(client: AsyncClient) -> None:
     from app.main import app
 
@@ -242,3 +303,7 @@ def test_safe_sql_blocks_dangerous_statements() -> None:
 
     ok, _ = _safe_sql("SELECT category, SUM(amount) FROM household_expenses GROUP BY category")
     assert ok is True
+
+
+def test_household_cte_casts_status_to_text() -> None:
+    assert "CAST(e.status AS TEXT) AS status" in HOUSEHOLD_CTE
