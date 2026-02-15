@@ -5,10 +5,11 @@ import json
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from app.services.analysis.prompts import (
     SQL_SUMMARY_SYSTEM_PROMPT,
+    build_langchain_sql_agent_system_prompt,
     build_sql_fixer_system_prompt,
     build_sql_fixer_user_prompt,
     build_sql_generator_system_prompt,
@@ -117,7 +118,25 @@ class SQLAgentRunner:
                 max_attempts=max_attempts,
             )
         if self.provider_name == "cerebras":
-            return await self._run_langgraph(question=question, max_attempts=max_attempts)
+            try:
+                result = await self._run_cerebras_langchain_agent(
+                    question=question,
+                    max_attempts=max_attempts,
+                )
+                if result.success:
+                    return result
+            except Exception:
+                pass
+            try:
+                return await self._run_langgraph(
+                    question=question,
+                    max_attempts=max_attempts,
+                )
+            except RuntimeError:
+                return await self._run_sequential(
+                    question=question,
+                    max_attempts=max_attempts,
+                )
         return await self._run_sequential(question=question, max_attempts=max_attempts)
 
     async def _run_sequential(self, *, question: str, max_attempts: int) -> SQLAgentResult:
@@ -203,6 +222,176 @@ class SQLAgentRunner:
             success=False,
             final_sql=sql_query,
             answer=answer,
+            attempts=attempts,
+            columns=[],
+            rows=[],
+            tool_trace=tool_trace,
+            failure_reason=failure_reason,
+        )
+
+    async def _run_cerebras_langchain_agent(
+        self,
+        *,
+        question: str,
+        max_attempts: int,
+    ) -> SQLAgentResult:
+        try:
+            from langchain.agents import create_agent
+            from langchain.tools import tool
+            from langchain_cerebras import ChatCerebras
+        except Exception as exc:  # pragma: no cover - dependency runtime path
+            raise RuntimeError(
+                "LangChain Cerebras agent dependencies are required. "
+                "Install langchain-cerebras."
+            ) from exc
+
+        if self.api_key:
+            os.environ["CEREBRAS_API_KEY"] = self.api_key
+
+        system_prompt = build_langchain_sql_agent_system_prompt(
+            self.live_schema_text,
+            self.household_hints_text,
+        )
+        attempts: list[SQLAgentAttempt] = []
+        tool_trace: list[str] = ["tool_select"]
+        final_sql = ""
+        final_cols: Cols = []
+        final_rows: Rows = []
+        last_error: str | None = None
+        next_reason: str | None = "langchain_cerebras_tool_sql"
+
+        async def _execute_with_repair(sql: str) -> dict[str, Any]:
+            nonlocal final_sql, final_cols, final_rows, last_error, next_reason
+
+            sql_query = sql.strip() or self._fallback_sql(question)
+            while len(attempts) < max_attempts:
+                attempt_number = len(attempts) + 1
+                tool_trace.append("sql_validate")
+                validation_ok, validation_reason = self._validate_sql(sql_query)
+                execution_ok = False
+                db_error: str | None = None
+                cols: Cols = []
+                rows: Rows = []
+                if validation_ok:
+                    tool_trace.append("sql_execute")
+                    try:
+                        cols, rows = await self._execute_sql(sql_query)
+                        execution_ok = True
+                        final_sql = sql_query
+                        final_cols = cols
+                        final_rows = rows
+                    except Exception as exc:  # pragma: no cover - backend/runtime dependent
+                        db_error = str(exc)
+                        last_error = db_error
+                else:
+                    db_error = validation_reason
+                    last_error = validation_reason
+
+                attempts.append(
+                    SQLAgentAttempt(
+                        attempt_number=attempt_number,
+                        generated_sql=sql_query,
+                        llm_reason=next_reason,
+                        validation_ok=validation_ok,
+                        validation_reason=validation_reason if not validation_ok else None,
+                        execution_ok=execution_ok,
+                        db_error=db_error if not execution_ok else None,
+                    )
+                )
+                if execution_ok:
+                    return {
+                        "ok": True,
+                        "sql": sql_query,
+                        "columns": cols,
+                        "rows": rows,
+                    }
+                if len(attempts) >= max_attempts:
+                    break
+
+                tool_trace.append(f"sql_fix_{len(attempts) + 1}")
+                fix_payload = await self._call_llm_json(
+                    build_sql_fixer_system_prompt(
+                        self.live_schema_text,
+                        self.household_hints_text,
+                    ),
+                    build_sql_fixer_user_prompt(
+                        question=question,
+                        failed_sql=sql_query,
+                        db_error=last_error or "unknown execution error",
+                    ),
+                )
+                fixed_sql = str((fix_payload or {}).get("sql", "")).strip()
+                next_reason = str((fix_payload or {}).get("reason", "")).strip() or "sql_fix_retry"
+                if not fixed_sql:
+                    break
+                sql_query = fixed_sql
+            return {
+                "ok": False,
+                "sql": sql_query,
+                "columns": [],
+                "rows": [],
+                "error": last_error or "SQL execution failed.",
+            }
+
+        @tool("run_sql_query")
+        async def run_sql_query(sql: str) -> dict[str, Any]:
+            """
+            Execute a SQL query against household expense analytics data.
+            """
+            tool_trace.append("sql_generate")
+            return await _execute_with_repair(sql)
+
+        llm = ChatCerebras(
+            model=self.model,
+            api_key=self.api_key,
+            temperature=0,
+        )
+        agent = create_agent(
+            model=llm,
+            tools=[run_sql_query],
+            system_prompt=system_prompt,
+        )
+        response = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": question}]}
+        )
+
+        success = any(item.execution_ok for item in attempts)
+        if success:
+            answer = _extract_langchain_agent_answer(response).strip()
+            if not answer:
+                answer = self._default_answer(question, final_cols, final_rows)
+            return SQLAgentResult(
+                success=True,
+                final_sql=final_sql,
+                answer=answer,
+                attempts=attempts,
+                columns=final_cols,
+                rows=final_rows,
+                tool_trace=tool_trace,
+            )
+
+        fallback_sql = final_sql or self._fallback_sql(question)
+        if not attempts:
+            validation_ok, validation_reason = self._validate_sql(fallback_sql)
+            db_error = validation_reason if not validation_ok else "Tool call was not executed."
+            attempts = [
+                SQLAgentAttempt(
+                    attempt_number=1,
+                    generated_sql=fallback_sql,
+                    llm_reason="langchain_agent_missing_tool_call",
+                    validation_ok=validation_ok,
+                    validation_reason=validation_reason if not validation_ok else None,
+                    execution_ok=False,
+                    db_error=db_error,
+                )
+            ]
+            last_error = db_error
+
+        failure_reason = last_error or attempts[-1].db_error or "SQL execution failed."
+        return SQLAgentResult(
+            success=False,
+            final_sql=attempts[-1].generated_sql if attempts else fallback_sql,
+            answer=f"SQL execution failed after {len(attempts)} attempt(s): {failure_reason}",
             attempts=attempts,
             columns=[],
             rows=[],
@@ -694,6 +883,43 @@ def _render_with_langchain(system_prompt: str, user_prompt: str) -> tuple[str, s
     if len(messages) < 2:
         return system_prompt, user_prompt
     return str(messages[0].content), str(messages[1].content)
+
+
+def _extract_langchain_agent_answer(response: object) -> str:
+    if isinstance(response, dict):
+        messages = response.get("messages")
+        if isinstance(messages, list) and messages:
+            return _message_content_to_text(messages[-1])
+        output = response.get("output")
+        if output is not None:
+            return str(output).strip()
+    return _message_content_to_text(response)
+
+
+def _message_content_to_text(message: object) -> str:
+    if message is None:
+        return ""
+    content: object = None
+    if isinstance(message, dict):
+        content = message.get("content")
+    else:
+        content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                maybe_text = item.get("text") or item.get("content")
+                if isinstance(maybe_text, str):
+                    parts.append(maybe_text)
+        return "\n".join(part.strip() for part in parts if part).strip()
+    if content is not None:
+        return str(content).strip()
+    return str(message).strip() if isinstance(message, str) else ""
 
 
 def _agent_output_to_dict(output: object) -> dict:

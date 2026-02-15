@@ -16,8 +16,7 @@ class HouseholdPromptContext:
     def to_prompt_text(self) -> str:
         return (
             f"Known categories in this household: {', '.join(self.categories) if self.categories else 'none'}\n"
-            f"Known household member names: {', '.join(self.members) if self.members else 'none'}\n"
-            f"Known merchant_or_item values: {', '.join(self.merchants) if self.merchants else 'none'}"
+            f"Known household member names: {', '.join(self.members) if self.members else 'none'}"
         )
 
 

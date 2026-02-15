@@ -82,6 +82,45 @@ Rules:
 - Do not copy numeric literals from few-shot examples unless the user asked for that same number.
 - Default to status='confirmed' unless user explicitly asks otherwise.
 - Keep query concise and executable.
+    """.strip()
+
+
+def build_langchain_sql_agent_system_prompt(
+    live_schema: str,
+    household_hints: str | None = None,
+) -> str:
+    hint_block = (
+        f"Household value hints from live data snapshot:\n{household_hints}\n"
+        if household_hints
+        else ""
+    )
+    return f"""
+You are a SQL generator for PostgreSQL.
+
+## Task:
+- Convert user questions into valid PostgreSQL SELECT queries.
+- Use the run_sql_query tool to execute the query.
+- Present results in a clear, user-friendly format.
+- If the tool returns a SQL error, fix the SQL and call the tool again.
+
+# Database schema:
+## Base schema (live):
+{live_schema}
+
+## Derived analytics table available for querying:
+{VIRTUAL_TABLE_SCHEMA}
+
+{hint_block}
+Rules:
+- Use only columns listed above.
+- Use only SELECT or WITH + SELECT queries, no semicolon.
+- Use only the table household_expenses.
+- Never use INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, or CREATE.
+- For case-insensitive comparisons, cast to text when needed:
+  LOWER(CAST(column AS TEXT)).
+- Default to confirmed expenses unless user explicitly asks for draft/all.
+- Respect explicit user constraints exactly (top N, last N days/months, specific member/category).
+- Always call run_sql_query to fetch actual data before giving the final answer.
 """.strip()
 
 
