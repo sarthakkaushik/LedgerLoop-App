@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.core.config import get_settings
 from app.core.db import get_session
 from app.models.user import User
 from app.schemas.analysis import AnalysisAskRequest, AnalysisAskResponse
@@ -29,6 +30,7 @@ from app.services.analysis.sql_validation import validate_safe_sql
 from app.services.llm.settings_service import LLMRuntimeConfig, get_env_runtime_config
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
+settings = get_settings()
 
 HOUSEHOLD_CTE = """
 WITH household_expenses AS (
@@ -67,21 +69,23 @@ def _safe_sql(query: str) -> tuple[bool, str]:
 
 
 async def _llm_json(
-    runtime: LLMRuntimeConfig,
+    *,
+    model: str,
+    api_key: str | None,
     system_prompt: str,
     user_prompt: str,
 ) -> dict | None:
-    if runtime.provider.value != "cerebras" or not runtime.api_key:
+    if not api_key:
         return None
     payload = {
-        "model": runtime.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0,
     }
-    headers = {"Authorization": f"Bearer {runtime.api_key}"}
+    headers = {"Authorization": f"Bearer {api_key}"}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
             response = await client.post(
@@ -151,20 +155,32 @@ async def _run_sql_agent(
     household_id: UUID,
     question: str,
 ) -> SQLAgentResult:
+    cerebras_model = settings.cerebras_model.strip() or runtime.model
+    cerebras_api_key = (
+        settings.cerebras_api_key.strip()
+        if settings.cerebras_api_key and settings.cerebras_api_key.strip()
+        else (runtime.api_key if runtime.provider.value == "cerebras" else None)
+    )
+
     async def llm_callback(system_prompt: str, user_prompt: str) -> dict | None:
-        return await _llm_json(runtime, system_prompt, user_prompt)
+        return await _llm_json(
+            model=cerebras_model,
+            api_key=cerebras_api_key,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
 
     async def execute_sql(sql_query: str) -> tuple[list[str], list[list[str | float | int]]]:
         return await _run_sql(session, household_id, sql_query)
 
     runner = SQLAgentRunner(
-        provider_name=runtime.provider.value,
+        provider_name="cerebras",
         llm_json=llm_callback,
         validate_sql=_safe_sql,
         execute_sql=execute_sql,
         default_answer=_default_answer,
-        model=runtime.model,
-        api_key=runtime.api_key,
+        model=cerebras_model,
+        api_key=cerebras_api_key,
     )
     return await runner.run(question, max_attempts=3)
 
@@ -180,13 +196,14 @@ async def ask_analysis(
     question = payload.text.strip()
 
     query_log = None
+    log_model = settings.cerebras_model.strip() or runtime.model
     try:
         query_log = await create_query_log(
             session,
             household_id=user.household_id,
             user_id=user.id,
-            provider=runtime.provider.value,
-            model=runtime.model,
+            provider="cerebras",
+            model=log_model,
             question=question,
             mode="analytics",
             route="agent",
