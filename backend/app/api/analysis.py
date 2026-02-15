@@ -31,7 +31,7 @@ from app.services.analysis.logging_service import (
     finalize_query_log,
 )
 from app.services.analysis.schema_introspection import (
-    load_household_prompt_hints,
+    load_household_prompt_context,
     load_live_schema_text,
 )
 from app.services.analysis.sql_agent import SQLAgentResult, SQLAgentRunner
@@ -515,12 +515,14 @@ async def _run_sql_agent(
     session: AsyncSession,
     household_id: UUID,
     question: str,
+    reference_date: date,
 ) -> SQLAgentResult:
     live_schema_text = await load_live_schema_text(session)
-    household_hints_text = await load_household_prompt_hints(
+    household_context = await load_household_prompt_context(
         session,
         household_id=household_id,
     )
+    household_hints_text = household_context.to_prompt_text()
 
     async def llm_callback(system_prompt: str, user_prompt: str) -> dict | None:
         return await _llm_json(
@@ -545,6 +547,9 @@ async def _run_sql_agent(
         api_key=runtime.api_key,
         live_schema_text=live_schema_text,
         household_hints_text=household_hints_text,
+        household_categories=household_context.categories,
+        household_members=household_context.members,
+        reference_date=reference_date,
     )
     return await runner.run(question, max_attempts=3)
 
@@ -648,6 +653,7 @@ async def ask_analysis(payload: AnalysisAskRequest, user: User = Depends(get_cur
             session=session,
             household_id=user.household_id,
             question=question,
+            reference_date=today,
         )
     except Exception as exc:
         response = AnalysisAskResponse(

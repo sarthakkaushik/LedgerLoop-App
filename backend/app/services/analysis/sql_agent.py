@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 import json
 import os
 from collections.abc import Awaitable, Callable
@@ -14,6 +15,7 @@ from app.services.analysis.prompts import (
     build_sql_generator_user_prompt,
     build_sql_summary_user_prompt,
 )
+from app.services.analysis.tool_query_engine import build_answer, build_query
 
 CellValue = str | float | int
 Rows = list[list[CellValue]]
@@ -80,6 +82,9 @@ class SQLAgentRunner:
         api_key: str | None,
         live_schema_text: str,
         household_hints_text: str | None = None,
+        household_categories: list[str] | None = None,
+        household_members: list[str] | None = None,
+        reference_date: date | None = None,
     ):
         self.provider_name = provider_name.lower().strip()
         self._llm_json = llm_json
@@ -91,20 +96,26 @@ class SQLAgentRunner:
         self.api_key = api_key
         self.live_schema_text = live_schema_text
         self.household_hints_text = household_hints_text
+        self.household_categories = household_categories or []
+        self.household_members = household_members or []
+        self.reference_date = reference_date or date.today()
 
     async def run(self, question: str, max_attempts: int = 3) -> SQLAgentResult:
         if self.provider_name == "openai":
             try:
-                return await self._run_openai_agents_sdk(
+                result = await self._run_openai_agents_sdk(
                     question=question,
                     max_attempts=max_attempts,
                 )
+                if result.success:
+                    return result
             except RuntimeError:
                 # Keep service usable when SDK dependency is missing in local/dev.
-                return await self._run_sequential(
-                    question=question,
-                    max_attempts=max_attempts,
-                )
+                pass
+            return await self._run_sequential(
+                question=question,
+                max_attempts=max_attempts,
+            )
         if self.provider_name == "cerebras":
             return await self._run_langgraph(question=question, max_attempts=max_attempts)
         return await self._run_sequential(question=question, max_attempts=max_attempts)
@@ -440,8 +451,7 @@ class SQLAgentRunner:
         max_attempts: int,
     ) -> SQLAgentResult:
         try:
-            from agents import Agent, Runner
-            from pydantic import BaseModel
+            from agents import Agent, Runner, function_tool
         except Exception as exc:  # pragma: no cover - dependency runtime path
             raise RuntimeError(
                 "OpenAI Agents SDK is required for openai provider orchestration. "
@@ -451,132 +461,221 @@ class SQLAgentRunner:
         if self.api_key:
             os.environ["OPENAI_API_KEY"] = self.api_key
 
-        class _SQLPayload(BaseModel):
-            sql: str
-            reason: str | None = None
-
-        class _SummaryPayload(BaseModel):
-            answer: str
-
-        generator_agent = Agent(
-            name="sql_generator",
-            instructions=build_sql_generator_system_prompt(
-                self.live_schema_text,
-                self.household_hints_text,
-            ),
-            model=self.model,
-            output_type=_SQLPayload,
-        )
-        fixer_agent = Agent(
-            name="sql_fixer",
-            instructions=build_sql_fixer_system_prompt(
-                self.live_schema_text,
-                self.household_hints_text,
-            ),
-            model=self.model,
-            output_type=_SQLPayload,
-        )
-        summary_agent = Agent(
-            name="sql_summarizer",
-            instructions=SQL_SUMMARY_SYSTEM_PROMPT,
-            model=self.model,
-            output_type=_SummaryPayload,
-        )
-
-        attempts: list[SQLAgentAttempt] = []
-        tool_trace: list[str] = []
-        sql_query = ""
-        cols: Cols = []
-        rows: Rows = []
-        last_error: str | None = None
-
-        for idx in range(1, max_attempts + 1):
-            if idx == 1:
-                tool_trace.append("sql_generate")
-                response = await Runner.run(
-                    generator_agent,
-                    build_sql_generator_user_prompt(question),
-                )
-            else:
-                tool_trace.append(f"sql_fix_{idx}")
-                response = await Runner.run(
-                    fixer_agent,
-                    build_sql_fixer_user_prompt(
-                        question=question,
-                        failed_sql=sql_query,
-                        db_error=last_error or "unknown execution error",
+        async def _run_structured_query(
+            *,
+            intent: str = "auto",
+            period: str = "this_month",
+            status: str = "confirmed",
+            category: str | None = None,
+            member: str | None = None,
+            top_n: int = 5,
+            months: int = 6,
+        ) -> dict:
+            built = build_query(
+                question=question,
+                intent=intent,
+                period=period,
+                status=status,
+                category=category,
+                member=member,
+                top_n=top_n,
+                months=months,
+                reference_date=self.reference_date,
+                household_categories=self.household_categories,
+                household_members=self.household_members,
+            )
+            validation_ok, validation_reason = self._validate_sql(built.sql)
+            if not validation_ok:
+                return {
+                    "ok": False,
+                    "tool": built.tool_name,
+                    "intent": built.intent,
+                    "sql": built.sql,
+                    "validation_ok": False,
+                    "validation_reason": validation_reason,
+                    "execution_ok": False,
+                    "db_error": validation_reason,
+                    "columns": [],
+                    "rows": [],
+                    "answer": "",
+                    "reason": (
+                        f"intent={built.intent}; period={built.period_label}; "
+                        f"category={built.resolved_category or 'none'}; "
+                        f"member={built.resolved_member or 'none'}"
                     ),
-                )
+                }
 
-            payload = _agent_output_to_dict(response.final_output)
-            sql_query = str(payload.get("sql", "")).strip()
-            llm_reason = str(payload.get("reason", "")).strip() or None
-            if not sql_query:
-                sql_query = self._fallback_sql(question)
+            try:
+                cols, rows = await self._execute_sql(built.sql)
+            except Exception as exc:  # pragma: no cover - backend/runtime dependent
+                return {
+                    "ok": False,
+                    "tool": built.tool_name,
+                    "intent": built.intent,
+                    "sql": built.sql,
+                    "validation_ok": True,
+                    "validation_reason": None,
+                    "execution_ok": False,
+                    "db_error": str(exc),
+                    "columns": [],
+                    "rows": [],
+                    "answer": "",
+                    "reason": (
+                        f"intent={built.intent}; period={built.period_label}; "
+                        f"category={built.resolved_category or 'none'}; "
+                        f"member={built.resolved_member or 'none'}"
+                    ),
+                }
 
-            tool_trace.append("sql_validate")
-            validation_ok, validation_reason = self._validate_sql(sql_query)
+            return {
+                "ok": True,
+                "tool": built.tool_name,
+                "intent": built.intent,
+                "sql": built.sql,
+                "validation_ok": True,
+                "validation_reason": None,
+                "execution_ok": True,
+                "db_error": None,
+                "columns": cols,
+                "rows": rows,
+                "answer": build_answer(built, cols, rows),
+                "reason": (
+                    f"intent={built.intent}; period={built.period_label}; "
+                    f"category={built.resolved_category or 'none'}; "
+                    f"member={built.resolved_member or 'none'}"
+                ),
+            }
 
-            execution_ok = False
-            db_error: str | None = None
-            if validation_ok:
-                tool_trace.append("sql_execute")
-                try:
-                    cols, rows = await self._execute_sql(sql_query)
-                    execution_ok = True
-                except Exception as exc:  # pragma: no cover - backend/runtime dependent
-                    db_error = str(exc)
-                    last_error = db_error
-            else:
-                db_error = validation_reason
-                last_error = validation_reason
+        @function_tool
+        async def analyze_expenses(
+            intent: str = "auto",
+            period: str = "this_month",
+            status: str = "confirmed",
+            category: str | None = None,
+            member: str | None = None,
+            top_n: int = 5,
+            months: int = 6,
+        ) -> dict:
+            """
+            Analyze household expenses using deterministic SQL tools.
 
-            attempts.append(
+            Args:
+                intent: One of total_spend, category_breakdown, member_breakdown, top_expenses,
+                    monthly_trend, or auto.
+                period: One of today, yesterday, this_week, last_7_days, last_30_days,
+                    last_60_days, last_90_days, this_month, last_month, this_year, all_time.
+                status: confirmed, draft, or all.
+                category: Optional user category keyword (for example food, groceries, transport).
+                member: Optional household member name.
+                top_n: Number of rows for top_expenses style queries.
+                months: Number of months for monthly_trend.
+            """
+            return await _run_structured_query(
+                intent=intent,
+                period=period,
+                status=status,
+                category=category,
+                member=member,
+                top_n=top_n,
+                months=months,
+            )
+
+        household_categories_text = ", ".join(self.household_categories) or "none"
+        household_members_text = ", ".join(self.household_members) or "none"
+        instructions = (
+            "You are an expense analytics planner. "
+            "Always call the analyze_expenses tool exactly once. "
+            "Do not answer directly without calling the tool.\n"
+            "Use status='confirmed' unless user explicitly requests draft/all.\n"
+            "Respect explicit constraints exactly (for example top 3, last 2 months).\n"
+            "Known household categories: "
+            f"{household_categories_text}\n"
+            "Known household members: "
+            f"{household_members_text}"
+        )
+        agent = Agent(
+            name="expense_analytics_tool_agent",
+            instructions=instructions,
+            model=self.model,
+            tools=[analyze_expenses],
+            tool_use_behavior="stop_on_first_tool",
+        )
+
+        response = await Runner.run(agent, question)
+        payload = _agent_output_to_dict(response.final_output)
+        if not payload:
+            fallback_sql = self._fallback_sql(question)
+            validation_ok, validation_reason = self._validate_sql(fallback_sql)
+            db_error = validation_reason if not validation_ok else "Tool call result missing."
+            attempts = [
                 SQLAgentAttempt(
-                    attempt_number=idx,
-                    generated_sql=sql_query,
-                    llm_reason=llm_reason,
+                    attempt_number=1,
+                    generated_sql=fallback_sql,
+                    llm_reason="openai_tool_agent_no_structured_tool_output",
                     validation_ok=validation_ok,
                     validation_reason=validation_reason if not validation_ok else None,
-                    execution_ok=execution_ok,
-                    db_error=db_error if not execution_ok else None,
+                    execution_ok=False,
+                    db_error=db_error,
                 )
+            ]
+            return SQLAgentResult(
+                success=False,
+                final_sql=fallback_sql,
+                answer=f"Tool-based analysis failed: {db_error}",
+                attempts=attempts,
+                columns=[],
+                rows=[],
+                tool_trace=["tool_select", "tool_missing_output"],
+                failure_reason=db_error,
             )
-            if execution_ok:
-                tool_trace.append("answer_summarize")
-                summary_res = await Runner.run(
-                    summary_agent,
-                    build_sql_summary_user_prompt(
-                        question=question,
-                        sql_query=sql_query,
-                        columns_json=json.dumps(cols),
-                        rows_json=json.dumps(rows[:30]),
-                    ),
-                )
-                summary_payload = _agent_output_to_dict(summary_res.final_output)
-                answer = str(summary_payload.get("answer", "")).strip()
-                if not answer:
-                    answer = self._default_answer(question, cols, rows)
-                return SQLAgentResult(
-                    success=True,
-                    final_sql=sql_query,
-                    answer=answer,
-                    attempts=attempts,
-                    columns=cols,
-                    rows=rows,
-                    tool_trace=tool_trace,
-                )
 
-        failure_reason = attempts[-1].db_error if attempts else "No SQL attempt executed."
+        generated_sql = str(payload.get("sql", "")).strip()
+        validation_ok = bool(payload.get("validation_ok", False))
+        validation_reason = (
+            str(payload.get("validation_reason", "")).strip() or None
+        )
+        execution_ok = bool(payload.get("execution_ok", False))
+        db_error = str(payload.get("db_error", "")).strip() or None
+        llm_reason = str(payload.get("reason", "")).strip() or None
+        cols: Cols = payload.get("columns", []) if isinstance(payload.get("columns"), list) else []
+        rows: Rows = payload.get("rows", []) if isinstance(payload.get("rows"), list) else []
+        tool_name = str(payload.get("tool", "analyze_expenses")).strip() or "analyze_expenses"
+
+        attempts = [
+            SQLAgentAttempt(
+                attempt_number=1,
+                generated_sql=generated_sql,
+                llm_reason=llm_reason,
+                validation_ok=validation_ok,
+                validation_reason=validation_reason,
+                execution_ok=execution_ok,
+                db_error=db_error,
+            )
+        ]
+        if not validation_ok or not execution_ok:
+            reason = db_error or validation_reason or "tool execution failed"
+            return SQLAgentResult(
+                success=False,
+                final_sql=generated_sql,
+                answer=f"Tool-based analysis failed: {reason}",
+                attempts=attempts,
+                columns=[],
+                rows=[],
+                tool_trace=["tool_select", tool_name, "tool_failed"],
+                failure_reason=reason,
+            )
+
+        answer = str(payload.get("answer", "")).strip()
+        if not answer:
+            answer = self._default_answer(question, cols, rows)
         return SQLAgentResult(
-            success=False,
-            final_sql=sql_query,
-            answer=f"SQL execution failed after {max_attempts} attempt(s): {failure_reason}",
+            success=True,
+            final_sql=generated_sql,
+            answer=answer,
             attempts=attempts,
-            columns=[],
-            rows=[],
-            tool_trace=tool_trace,
-            failure_reason=failure_reason,
+            columns=cols,
+            rows=rows,
+            tool_trace=["tool_select", tool_name, "sql_validate", "sql_execute"],
         )
 
 
