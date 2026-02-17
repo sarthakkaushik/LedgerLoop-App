@@ -58,6 +58,7 @@ WITH household_expenses AS (
     COALESCE(u.full_name,'Unknown') AS logged_by,
     CAST(e.status AS TEXT) AS status,
     COALESCE(e.category,'Other') AS category,
+    e.subcategory AS subcategory,
     e.description AS description,
     e.merchant_or_item AS merchant_or_item,
     e.amount AS amount,
@@ -226,11 +227,17 @@ def _build_friendly_row_summary(
     amount_idx = _find_column_index(columns, "amount", "total", "sum", "spend")
     currency_idx = _find_column_index(columns, "currency")
     category_idx = _find_column_index(columns, "category")
+    subcategory_idx = _find_column_index(columns, "subcategory")
     desc_idx = _find_column_index(columns, "description", "merchant_or_item", "merchant")
     date_idx = _find_column_index(columns, "date_incurred", "date", "created_at")
 
     person = str(row[person_idx]).strip() if person_idx is not None and person_idx < len(row) else ""
     category = str(row[category_idx]).strip() if category_idx is not None and category_idx < len(row) else ""
+    subcategory = (
+        str(row[subcategory_idx]).strip()
+        if subcategory_idx is not None and subcategory_idx < len(row)
+        else ""
+    )
     description = str(row[desc_idx]).strip() if desc_idx is not None and desc_idx < len(row) else ""
     date_text = (
         _format_date_for_answer(str(row[date_idx]))
@@ -253,7 +260,9 @@ def _build_friendly_row_summary(
     if amount_text:
         details.append(amount_text)
     if category:
-        details.append(category)
+        details.append(
+            f"{category} > {subcategory}" if subcategory and subcategory.lower() != category.lower() else category
+        )
     if description:
         details.append(description)
     if date_text:

@@ -11,6 +11,8 @@ from app.models import analysis_query as _analysis_query  # noqa: F401
 from app.models import analysis_query_attempt as _analysis_query_attempt  # noqa: F401
 from app.models import expense as _expense  # noqa: F401
 from app.models import household as _household  # noqa: F401
+from app.models import household_category as _household_category  # noqa: F401
+from app.models import household_subcategory as _household_subcategory  # noqa: F401
 from app.models import llm_setting as _llm_setting  # noqa: F401
 from app.models import user as _user  # noqa: F401
 

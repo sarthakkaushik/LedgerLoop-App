@@ -28,6 +28,7 @@ class Expense(SQLModel, table=True):
     amount: float | None = Field(default=None)
     currency: str = Field(sa_column=Column(String(8), nullable=False, default="INR"))
     category: str | None = Field(default=None, max_length=80)
+    subcategory: str | None = Field(default=None, max_length=80)
     description: str | None = Field(default=None, max_length=255)
     merchant_or_item: str | None = Field(default=None, max_length=255)
     date_incurred: date = Field(nullable=False)

@@ -24,6 +24,7 @@ class OpenAIExpenseParserProvider(ExpenseParserProvider):
                         timezone=context.timezone,
                         default_currency=context.default_currency,
                         household_categories=context.household_categories,
+                        household_taxonomy=context.household_taxonomy,
                         household_members=context.household_members,
                     ),
                 },

@@ -16,6 +16,7 @@ from app.services.llm.provider_factory import get_expense_parser_provider
 from app.services.llm.settings_service import (
     get_env_runtime_config,
 )
+from app.services.taxonomy_service import build_household_taxonomy_map
 from app.services.llm.types import ParseContext
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
@@ -70,12 +71,29 @@ async def get_llm_parse_context(
     session: AsyncSession = Depends(get_session),
 ) -> ParseContext:
     runtime = get_env_runtime_config()
-    cat_result = await session.execute(
-        select(Expense.category).where(
-            Expense.household_id == user.household_id,
-            Expense.category.is_not(None),
-        )
+    categories, taxonomy = await build_household_taxonomy_map(
+        session,
+        household_id=user.household_id,
     )
+
+    if not categories:
+        cat_result = await session.execute(
+            select(Expense.category).where(
+                Expense.household_id == user.household_id,
+                Expense.category.is_not(None),
+            )
+        )
+        categories = sorted(
+            {
+                str(value).strip()
+                for value in cat_result.scalars().all()
+                if value and str(value).strip()
+            }
+        )[:30]
+        if "Other" not in categories:
+            categories.append("Other")
+        taxonomy = {category: [] for category in categories}
+
     member_result = await session.execute(
         select(User.full_name).where(
             User.household_id == user.household_id,
@@ -83,13 +101,6 @@ async def get_llm_parse_context(
         )
     )
 
-    categories = sorted(
-        {
-            str(value).strip()
-            for value in cat_result.scalars().all()
-            if value and str(value).strip()
-        }
-    )[:30]
     members = sorted(
         {
             str(value).strip()
@@ -102,6 +113,7 @@ async def get_llm_parse_context(
         reference_date=_today_for_timezone(runtime.timezone),
         timezone=runtime.timezone,
         default_currency=runtime.default_currency,
-        household_categories=categories,
+        household_categories=categories[:60],
+        household_taxonomy=taxonomy,
         household_members=members,
     )

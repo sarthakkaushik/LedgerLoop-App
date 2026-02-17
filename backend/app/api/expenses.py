@@ -14,6 +14,8 @@ from sqlmodel import select
 from app.api.deps import get_current_user, get_expense_parser, get_llm_parse_context
 from app.core.db import get_session
 from app.models.expense import Expense, ExpenseStatus
+from app.models.household_category import HouseholdCategory
+from app.models.household_subcategory import HouseholdSubcategory
 from app.models.user import User, UserRole
 from app.schemas.expense import (
     DashboardCategoryPoint,
@@ -34,6 +36,7 @@ from app.schemas.expense import (
 from app.services.llm.base import ExpenseParserProvider
 from app.services.llm.provider_factory import ProviderNotConfiguredError
 from app.services.llm.types import ParseContext
+from app.services.taxonomy_service import normalize_taxonomy_name
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
@@ -53,6 +56,7 @@ def _to_expense_draft(expense: Expense) -> ExpenseDraft:
         amount=expense.amount,
         currency=expense.currency,
         category=expense.category,
+        subcategory=expense.subcategory,
         description=expense.description,
         merchant_or_item=expense.merchant_or_item,
         date_incurred=str(expense.date_incurred),
@@ -67,6 +71,7 @@ def _to_expense_feed_item(expense: Expense, logged_by_name: str) -> ExpenseFeedI
         amount=expense.amount,
         currency=expense.currency,
         category=expense.category,
+        subcategory=expense.subcategory,
         description=expense.description,
         merchant_or_item=expense.merchant_or_item,
         date_incurred=str(expense.date_incurred),
@@ -87,6 +92,101 @@ def _build_expense_filters(
     if status_filter != "all":
         filters.append(Expense.status == ExpenseStatus(status_filter))
     return filters
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = " ".join(value.strip().split())
+    return cleaned or None
+
+
+async def _load_taxonomy_lookup(
+    session: AsyncSession,
+    household_id: UUID,
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    categories_result = await session.execute(
+        select(HouseholdCategory).where(
+            HouseholdCategory.household_id == household_id,
+            HouseholdCategory.is_active.is_(True),
+        )
+    )
+    categories = categories_result.scalars().all()
+    category_lookup: dict[str, str] = {}
+    category_ids: list[UUID] = []
+    category_norm_by_id: dict[UUID, str] = {}
+    for category in categories:
+        normalized = normalize_taxonomy_name(category.name)
+        if not normalized:
+            continue
+        cleaned_name = _clean_optional_text(category.name)
+        if not cleaned_name:
+            continue
+        category_lookup[normalized] = cleaned_name
+        category_ids.append(category.id)
+        category_norm_by_id[category.id] = normalized
+
+    subcategory_lookup: dict[str, dict[str, str]] = {}
+    if category_ids:
+        subcategories_result = await session.execute(
+            select(HouseholdSubcategory).where(
+                HouseholdSubcategory.household_category_id.in_(category_ids),
+                HouseholdSubcategory.is_active.is_(True),
+            )
+        )
+        for subcategory in subcategories_result.scalars().all():
+            category_norm = category_norm_by_id.get(subcategory.household_category_id)
+            if not category_norm:
+                continue
+            sub_norm = normalize_taxonomy_name(subcategory.name)
+            if not sub_norm:
+                continue
+            cleaned_name = _clean_optional_text(subcategory.name)
+            if not cleaned_name:
+                continue
+            subcategory_lookup.setdefault(category_norm, {})[sub_norm] = cleaned_name
+
+    return category_lookup, subcategory_lookup
+
+
+def _normalize_taxonomy_selection(
+    *,
+    category: str | None,
+    subcategory: str | None,
+    category_lookup: dict[str, str],
+    subcategory_lookup: dict[str, dict[str, str]],
+) -> tuple[str | None, str | None, list[str]]:
+    warnings: list[str] = []
+    cleaned_category = _clean_optional_text(category)
+    cleaned_subcategory = _clean_optional_text(subcategory)
+    if not cleaned_category:
+        if cleaned_subcategory:
+            warnings.append(
+                f"Subcategory '{cleaned_subcategory}' was cleared because category was empty."
+            )
+        return None, None, warnings
+
+    normalized_category = normalize_taxonomy_name(cleaned_category)
+    resolved_category = category_lookup.get(normalized_category)
+    if not resolved_category:
+        warnings.append(
+            f"Category '{cleaned_category}' was not in household taxonomy and was normalized to 'Other'."
+        )
+        return "Other", None, warnings
+
+    if not cleaned_subcategory:
+        return resolved_category, None, warnings
+
+    resolved_subcategory = subcategory_lookup.get(normalized_category, {}).get(
+        normalize_taxonomy_name(cleaned_subcategory)
+    )
+    if not resolved_subcategory:
+        warnings.append(
+            f"Subcategory '{cleaned_subcategory}' was not valid for category '{resolved_category}' and was cleared."
+        )
+        return resolved_category, None, warnings
+
+    return resolved_category, resolved_subcategory, warnings
 
 
 async def _resolve_user_names(
@@ -157,6 +257,7 @@ async def log_expenses(
             amount=parsed_expense.amount,
             currency=(parsed_expense.currency or context.default_currency).upper(),
             category=parsed_expense.category,
+            subcategory=parsed_expense.subcategory,
             description=parsed_expense.description,
             merchant_or_item=parsed_expense.merchant_or_item,
             date_incurred=_parse_date_incurred(
@@ -206,6 +307,7 @@ async def confirm_expenses(
             confirmed_count=len(replay_expenses),
             idempotent_replay=True,
             expenses=[_to_expense_draft(expense) for expense in replay_expenses],
+            warnings=[],
         )
 
     expense_updates: dict[UUID, ExpenseConfirmEdit] = {}
@@ -238,7 +340,12 @@ async def confirm_expenses(
             detail="One or more draft expenses were not found for this household.",
         )
 
+    category_lookup, subcategory_lookup = await _load_taxonomy_lookup(session, user.household_id)
+    if "other" not in category_lookup:
+        category_lookup["other"] = "Other"
+
     now = datetime.now(UTC).replace(tzinfo=None)
+    normalization_warnings: list[str] = []
     for expense in draft_expenses:
         update = expense_updates[expense.id]
 
@@ -248,6 +355,8 @@ async def confirm_expenses(
             expense.currency = update.currency.strip().upper()
         if update.category is not None:
             expense.category = update.category.strip() or None
+        if update.subcategory is not None:
+            expense.subcategory = update.subcategory.strip() or None
         if update.description is not None:
             expense.description = update.description.strip() or None
         if update.merchant_or_item is not None:
@@ -262,6 +371,16 @@ async def confirm_expenses(
                 ) from exc
         if update.is_recurring is not None:
             expense.is_recurring = update.is_recurring
+
+        resolved_category, resolved_subcategory, warnings = _normalize_taxonomy_selection(
+            category=expense.category,
+            subcategory=expense.subcategory,
+            category_lookup=category_lookup,
+            subcategory_lookup=subcategory_lookup,
+        )
+        expense.category = resolved_category
+        expense.subcategory = resolved_subcategory
+        normalization_warnings.extend(warnings)
 
         if expense.amount is None:
             raise HTTPException(
@@ -291,6 +410,7 @@ async def confirm_expenses(
         confirmed_count=len(confirmed_expenses),
         idempotent_replay=False,
         expenses=[_to_expense_draft(expense) for expense in confirmed_expenses],
+        warnings=normalization_warnings,
     )
 
 
@@ -366,6 +486,7 @@ async def export_expenses_csv(
             "logged_by",
             "status",
             "category",
+            "subcategory",
             "description",
             "merchant_or_item",
             "amount",
@@ -385,6 +506,7 @@ async def export_expenses_csv(
                 user_names.get(expense.logged_by_user_id, "Unknown"),
                 expense.status.value,
                 expense.category or "",
+                expense.subcategory or "",
                 expense.description or "",
                 expense.merchant_or_item or "",
                 "" if expense.amount is None else f"{float(expense.amount):.2f}",

@@ -11,6 +11,7 @@ Return valid JSON only with this exact root object:
       "amount": number|null,
       "currency": string|null,
       "category": string|null,
+      "subcategory": string|null,
       "description": string|null,
       "merchant_or_item": string|null,
       "date_incurred": "YYYY-MM-DD"|null,
@@ -31,6 +32,8 @@ Rules:
 - Use context default currency when currency is missing.
 - Use context reference date when date is missing.
 - Prefer one of known household categories when it clearly matches the text.
+- Use known_taxonomy to select a valid subcategory for the chosen category.
+- If a subcategory is uncertain or does not clearly fit the chosen category, set subcategory=null.
 - For vague spend text, infer the best category from context hints; if uncertain use category="Other".
 - Description must be a short human-readable summary of what was purchased (not just a single token when more detail is present).
 - merchant_or_item should be the merchant/brand/item keyword if present, else null.
@@ -44,15 +47,18 @@ def build_user_prompt(
     timezone: str,
     default_currency: str,
     household_categories: list[str] | None = None,
+    household_taxonomy: dict[str, list[str]] | None = None,
     household_members: list[str] | None = None,
 ) -> str:
     categories = household_categories or []
+    taxonomy = household_taxonomy or {}
     members = household_members or []
     return (
         f"reference_date: {reference_date}\n"
         f"timezone: {timezone}\n"
         f"default_currency: {default_currency}\n"
         f"known_household_categories: {json.dumps(categories)}\n"
+        f"known_taxonomy: {json.dumps(taxonomy)}\n"
         f"known_household_members: {json.dumps(members)}\n"
         f"input_text: {text}"
     )

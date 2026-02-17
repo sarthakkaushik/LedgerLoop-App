@@ -5,17 +5,24 @@ import remarkGfm from "remark-gfm";
 import {
   askAnalysis,
   confirmExpenses,
+  createTaxonomyCategory,
+  createTaxonomySubcategory,
   createInviteCode,
+  deleteTaxonomyCategory,
+  deleteTaxonomySubcategory,
   deleteExpense,
   deleteHouseholdMember,
   downloadExpenseCsv,
   fetchDashboard,
   fetchExpenseFeed,
   fetchHousehold,
+  fetchTaxonomy,
   joinHousehold,
   loginUser,
   parseExpenseText,
   registerUser,
+  updateTaxonomyCategory,
+  updateTaxonomySubcategory,
 } from "./api";
 
 const tabs = [
@@ -44,24 +51,12 @@ const initialJoin = {
   invite_code: "",
 };
 
-const expenseCategories = [
-  "Groceries",
-  "Food",
-  "Dining",
-  "Transport",
-  "Fuel",
-  "Shopping",
-  "Utilities",
-  "Rent",
-  "EMI",
-  "Healthcare",
-  "Education",
-  "Entertainment",
-  "Travel",
-  "Bills",
-  "Gift",
-  "Others",
-];
+function normalizeTaxonomyName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
 
 function AuthCard({ onAuthSuccess }) {
   const [mode, setMode] = useState("register");
@@ -304,6 +299,53 @@ function ExpenseLogPanel({ token }) {
   const [confirmResult, setConfirmResult] = useState(null);
   const [confirmKey, setConfirmKey] = useState("");
   const [error, setError] = useState("");
+  const [taxonomy, setTaxonomy] = useState({ categories: [] });
+  const [taxonomyLoading, setTaxonomyLoading] = useState(false);
+  const [taxonomyError, setTaxonomyError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTaxonomy() {
+      setTaxonomyLoading(true);
+      setTaxonomyError("");
+      try {
+        const data = await fetchTaxonomy(token);
+        if (!cancelled) {
+          setTaxonomy(data);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTaxonomyError(err.message);
+        }
+      } finally {
+        if (!cancelled) {
+          setTaxonomyLoading(false);
+        }
+      }
+    }
+    loadTaxonomy();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  const taxonomyCategories = useMemo(
+    () => (Array.isArray(taxonomy?.categories) ? taxonomy.categories : []),
+    [taxonomy]
+  );
+  const taxonomyCategoryOptions = useMemo(
+    () => taxonomyCategories.map((category) => category.name),
+    [taxonomyCategories]
+  );
+
+  function getSubcategoryOptions(categoryName) {
+    const normalized = normalizeTaxonomyName(categoryName);
+    if (!normalized) return [];
+    const match = taxonomyCategories.find(
+      (category) => normalizeTaxonomyName(category.name) === normalized
+    );
+    return (match?.subcategories || []).map((subcategory) => subcategory.name);
+  }
 
   async function handleParse() {
     if (!text.trim()) return;
@@ -324,11 +366,31 @@ function ExpenseLogPanel({ token }) {
   }
 
   function updateDraft(index, field, value) {
-    setDrafts((prev) =>
-      prev.map((draft, currentIndex) =>
-        currentIndex === index ? { ...draft, [field]: value } : draft
-      )
-    );
+    setDrafts((prev) => {
+      return prev.map((draft, currentIndex) => {
+        if (currentIndex !== index) return draft;
+        const next = { ...draft, [field]: value };
+
+        if (field === "category") {
+          const options = getSubcategoryOptions(value);
+          if (
+            next.subcategory &&
+            !options.some(
+              (subcategory) =>
+                normalizeTaxonomyName(subcategory) === normalizeTaxonomyName(next.subcategory)
+            )
+          ) {
+            next.subcategory = "";
+          }
+        }
+
+        if (field === "subcategory" && !value) {
+          next.subcategory = "";
+        }
+
+        return next;
+      });
+    });
   }
 
   function buildIdempotencyKey() {
@@ -360,6 +422,7 @@ function ExpenseLogPanel({ token }) {
               : Number(draft.amount),
           currency: draft.currency || null,
           category: draft.category || null,
+          subcategory: draft.subcategory || null,
           description: draft.description || null,
           merchant_or_item: draft.merchant_or_item || null,
           date_incurred: draft.date_incurred || null,
@@ -382,6 +445,8 @@ function ExpenseLogPanel({ token }) {
         Chat naturally, or log spends directly. Example:{" "}
         <code>Bought groceries for 500 and paid 1200 for electricity yesterday</code>
       </p>
+      {taxonomyLoading && <p className="hint">Loading household taxonomy...</p>}
+      {taxonomyError && <p className="form-error">{taxonomyError}</p>}
       <div className="stack">
         <textarea
           value={text}
@@ -463,13 +528,35 @@ function ExpenseLogPanel({ token }) {
                   >
                     <option value="">Select category</option>
                     {draft.category &&
-                      !expenseCategories.some(
+                      !taxonomyCategoryOptions.some(
                         (category) =>
-                          category.toLowerCase() === draft.category.toLowerCase()
+                          normalizeTaxonomyName(category) ===
+                          normalizeTaxonomyName(draft.category)
                       ) && <option value={draft.category}>{draft.category}</option>}
-                    {expenseCategories.map((category) => (
+                    {taxonomyCategoryOptions.map((category) => (
                       <option key={category} value={category}>
                         {category}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Subcategory
+                  <select
+                    value={draft.subcategory || ""}
+                    onChange={(e) => updateDraft(idx, "subcategory", e.target.value)}
+                    disabled={!draft.category}
+                  >
+                    <option value="">Select subcategory</option>
+                    {draft.subcategory &&
+                      !getSubcategoryOptions(draft.category).some(
+                        (subcategory) =>
+                          normalizeTaxonomyName(subcategory) ===
+                          normalizeTaxonomyName(draft.subcategory)
+                      ) && <option value={draft.subcategory}>{draft.subcategory}</option>}
+                    {getSubcategoryOptions(draft.category).map((subcategory) => (
+                      <option key={`${draft.category}-${subcategory}`} value={subcategory}>
+                        {subcategory}
                       </option>
                     ))}
                   </select>
@@ -508,10 +595,19 @@ function ExpenseLogPanel({ token }) {
             </article>
           ))}
           {confirmResult && (
-            <p className="form-ok">
-              Confirmed {confirmResult.confirmed_count} expense(s)
-              {confirmResult.idempotent_replay ? " (idempotent replay)." : "."}
-            </p>
+            <>
+              <p className="form-ok">
+                Confirmed {confirmResult.confirmed_count} expense(s)
+                {confirmResult.idempotent_replay ? " (idempotent replay)." : "."}
+              </p>
+              {Array.isArray(confirmResult.warnings) && confirmResult.warnings.length > 0 && (
+                <ul className="taxonomy-warnings">
+                  {confirmResult.warnings.map((warning, index) => (
+                    <li key={`${warning}-${index}`}>{warning}</li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </div>
       )}
@@ -522,12 +618,16 @@ function ExpenseLogPanel({ token }) {
 function HouseholdPanel({ token, user }) {
   const [household, setHousehold] = useState(null);
   const [feed, setFeed] = useState(null);
+  const [taxonomy, setTaxonomy] = useState({ categories: [] });
   const [statusFilter, setStatusFilter] = useState("confirmed");
   const [loading, setLoading] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
+  const [taxonomyBusy, setTaxonomyBusy] = useState(false);
   const [deletingMemberId, setDeletingMemberId] = useState(null);
   const [deletingExpenseId, setDeletingExpenseId] = useState(null);
   const [downloadingCsv, setDownloadingCsv] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newSubcategoryByCategory, setNewSubcategoryByCategory] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -535,12 +635,14 @@ function HouseholdPanel({ token, user }) {
     setLoading(true);
     setError("");
     try {
-      const [householdData, feedData] = await Promise.all([
+      const [householdData, feedData, taxonomyData] = await Promise.all([
         fetchHousehold(token),
         fetchExpenseFeed(token, { status: statusFilter, limit: 100 }),
+        fetchTaxonomy(token),
       ]);
       setHousehold(householdData);
       setFeed(feedData);
+      setTaxonomy(taxonomyData);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -569,6 +671,15 @@ function HouseholdPanel({ token, user }) {
       }))
       .sort((a, b) => b.total - a.total);
   }, [feed]);
+
+  const taxonomyCategories = useMemo(
+    () => (Array.isArray(taxonomy?.categories) ? taxonomy.categories : []),
+    [taxonomy]
+  );
+
+  function updateSubcategoryInput(categoryId, value) {
+    setNewSubcategoryByCategory((prev) => ({ ...prev, [categoryId]: value }));
+  }
 
   async function handleGenerateInvite() {
     setInviteBusy(true);
@@ -639,6 +750,119 @@ function HouseholdPanel({ token, user }) {
       setError(err.message);
     } finally {
       setDownloadingCsv(false);
+    }
+  }
+
+  async function handleCreateCategory() {
+    const name = newCategoryName.trim();
+    if (!name || user?.role !== "admin") return;
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await createTaxonomyCategory(token, { name });
+      setTaxonomy(data);
+      setNewCategoryName("");
+      setMessage(`Added category "${name}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  async function handleRenameCategory(category) {
+    if (user?.role !== "admin") return;
+    const nextName = window.prompt("Rename category", category.name);
+    if (!nextName || nextName.trim() === category.name) return;
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await updateTaxonomyCategory(token, category.id, { name: nextName });
+      setTaxonomy(data);
+      setMessage(`Renamed category to "${nextName.trim()}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  async function handleDeactivateCategory(category) {
+    if (user?.role !== "admin") return;
+    const shouldDelete = window.confirm(
+      `Deactivate category "${category.name}" and all its subcategories?`
+    );
+    if (!shouldDelete) return;
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await deleteTaxonomyCategory(token, category.id);
+      setTaxonomy(data);
+      setMessage(`Deactivated category "${category.name}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  async function handleCreateSubcategory(category) {
+    if (user?.role !== "admin") return;
+    const name = String(newSubcategoryByCategory[category.id] || "").trim();
+    if (!name) return;
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await createTaxonomySubcategory(token, category.id, { name });
+      setTaxonomy(data);
+      updateSubcategoryInput(category.id, "");
+      setMessage(`Added subcategory "${name}" under "${category.name}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  async function handleRenameSubcategory(category, subcategory) {
+    if (user?.role !== "admin") return;
+    const nextName = window.prompt("Rename subcategory", subcategory.name);
+    if (!nextName || nextName.trim() === subcategory.name) return;
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await updateTaxonomySubcategory(token, subcategory.id, { name: nextName });
+      setTaxonomy(data);
+      setMessage(`Renamed subcategory to "${nextName.trim()}" under "${category.name}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  async function handleDeactivateSubcategory(category, subcategory) {
+    if (user?.role !== "admin") return;
+    const shouldDelete = window.confirm(
+      `Deactivate subcategory "${subcategory.name}" under "${category.name}"?`
+    );
+    if (!shouldDelete) return;
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await deleteTaxonomySubcategory(token, subcategory.id);
+      setTaxonomy(data);
+      setMessage(`Deactivated subcategory "${subcategory.name}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
     }
   }
 
@@ -730,6 +954,125 @@ function HouseholdPanel({ token, user }) {
               </div>
             </article>
 
+            <article className="result-card taxonomy-manager">
+              <div className="row draft-header">
+                <h3>Category Manager</h3>
+                {user?.role === "admin" && (
+                  <span className="tool-chip">{taxonomyCategories.length} categories</span>
+                )}
+              </div>
+
+              {user?.role === "admin" && (
+                <div className="taxonomy-create-row">
+                  <input
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    placeholder="Add category (e.g. Pets)"
+                    disabled={taxonomyBusy}
+                  />
+                  <button
+                    type="button"
+                    className="btn-main"
+                    onClick={handleCreateCategory}
+                    disabled={taxonomyBusy || !newCategoryName.trim()}
+                  >
+                    Add Category
+                  </button>
+                </div>
+              )}
+
+              {taxonomyCategories.length === 0 ? (
+                <p className="hint">No categories configured yet.</p>
+              ) : (
+                <div className="taxonomy-list">
+                  {taxonomyCategories.map((category) => (
+                    <article key={category.id} className="taxonomy-category">
+                      <div className="taxonomy-category-row">
+                        <strong>{category.name}</strong>
+                        {user?.role === "admin" ? (
+                          <div className="member-actions">
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              onClick={() => handleRenameCategory(category)}
+                              disabled={taxonomyBusy}
+                            >
+                              Rename
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-danger"
+                              onClick={() => handleDeactivateCategory(category)}
+                              disabled={taxonomyBusy}
+                            >
+                              Deactivate
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="hint">
+                            {category.subcategories.length} subcategories
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="taxonomy-sub-list">
+                        {category.subcategories.length === 0 ? (
+                          <small>No subcategories.</small>
+                        ) : (
+                          category.subcategories.map((subcategory) => (
+                            <div key={subcategory.id} className="taxonomy-sub-row">
+                              <span>{subcategory.name}</span>
+                              {user?.role === "admin" && (
+                                <div className="member-actions">
+                                  <button
+                                    type="button"
+                                    className="btn-ghost"
+                                    onClick={() => handleRenameSubcategory(category, subcategory)}
+                                    disabled={taxonomyBusy}
+                                  >
+                                    Rename
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-danger"
+                                    onClick={() => handleDeactivateSubcategory(category, subcategory)}
+                                    disabled={taxonomyBusy}
+                                  >
+                                    Deactivate
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      {user?.role === "admin" && (
+                        <div className="taxonomy-create-row">
+                          <input
+                            value={newSubcategoryByCategory[category.id] || ""}
+                            onChange={(e) => updateSubcategoryInput(category.id, e.target.value)}
+                            placeholder={`Add subcategory for ${category.name}`}
+                            disabled={taxonomyBusy}
+                          />
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            onClick={() => handleCreateSubcategory(category)}
+                            disabled={
+                              taxonomyBusy || !String(newSubcategoryByCategory[category.id] || "").trim()
+                            }
+                          >
+                            Add Subcategory
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </article>
+
             <article className="result-card">
               <h3>Spend by Person</h3>
               {userBoard.length === 0 ? (
@@ -787,6 +1130,7 @@ function HouseholdPanel({ token, user }) {
                       <th>Date</th>
                       <th>Logged By</th>
                       <th>Category</th>
+                      <th>Subcategory</th>
                       <th>Description</th>
                       <th>Amount</th>
                       <th>Status</th>
@@ -799,6 +1143,7 @@ function HouseholdPanel({ token, user }) {
                         <td>{item.date_incurred}</td>
                         <td>{item.logged_by_name}</td>
                         <td>{item.category || "Other"}</td>
+                        <td>{item.subcategory || "-"}</td>
                         <td>{item.description || item.merchant_or_item || "-"}</td>
                         <td>
                           {Number(item.amount || 0).toFixed(2)} {item.currency}

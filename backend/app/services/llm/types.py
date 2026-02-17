@@ -8,6 +8,7 @@ class ParseContext(BaseModel):
     timezone: str
     default_currency: str
     household_categories: list[str] = Field(default_factory=list)
+    household_taxonomy: dict[str, list[str]] = Field(default_factory=dict)
     household_members: list[str] = Field(default_factory=list)
 
 
@@ -15,6 +16,7 @@ class ParsedExpense(BaseModel):
     amount: float | None = None
     currency: str | None = None
     category: str | None = None
+    subcategory: str | None = None
     description: str | None = None
     merchant_or_item: str | None = None
     date_incurred: str | None = None

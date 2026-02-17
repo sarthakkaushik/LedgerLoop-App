@@ -752,6 +752,60 @@ input[type="checkbox"] {
   justify-content: flex-end;
 }
 
+.taxonomy-warnings {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #855126;
+}
+
+.taxonomy-manager {
+  display: grid;
+  gap: 10px;
+}
+
+.taxonomy-create-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr auto;
+}
+
+.taxonomy-list {
+  display: grid;
+  gap: 10px;
+}
+
+.taxonomy-category {
+  border: 1px solid #d8e8f1;
+  border-radius: 10px;
+  background: #f9fdff;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.taxonomy-category-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.taxonomy-sub-list {
+  display: grid;
+  gap: 8px;
+}
+
+.taxonomy-sub-row {
+  border: 1px solid #deebf3;
+  border-radius: 9px;
+  background: #ffffff;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .household-ledger {
   margin-top: 12px;
 }
@@ -915,6 +969,10 @@ input[type="checkbox"] {
   }
 
   .bar-row {
+    grid-template-columns: 1fr;
+  }
+
+  .taxonomy-create-row {
     grid-template-columns: 1fr;
   }
 }

@@ -23,6 +23,7 @@ from app.schemas.auth import (
     TokenResponse,
     UserResponse,
 )
+from app.services.taxonomy_service import seed_default_household_taxonomy
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -100,6 +101,11 @@ async def register(
         role=UserRole.ADMIN,
     )
     session.add(user)
+    await seed_default_household_taxonomy(
+        session,
+        household_id=household.id,
+        created_by_user_id=user.id,
+    )
     await session.commit()
     await session.refresh(user)
 
