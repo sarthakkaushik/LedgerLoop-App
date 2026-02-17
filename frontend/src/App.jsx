@@ -519,14 +519,6 @@ function QuickAddModal({
     () => taxonomyCategories.map((category) => category.name),
     [taxonomyCategories]
   );
-  const captureVoice = useVoiceTranscription({
-    token,
-    onTranscript: (transcript) => {
-      setText((previous) => appendVoiceTranscript(previous, transcript));
-      setError("");
-    },
-  });
-  const captureVoiceTranscribing = captureVoice.status === "transcribing";
 
   function getSubcategoryOptions(categoryName) {
     const normalized = normalizeTaxonomyName(categoryName);
@@ -1204,6 +1196,14 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
     () => taxonomyCategories.map((category) => category.name),
     [taxonomyCategories]
   );
+  const captureVoice = useVoiceTranscription({
+    token,
+    onTranscript: (transcript) => {
+      setText((previous) => appendVoiceTranscript(previous, transcript));
+      setError("");
+    },
+  });
+  const captureVoiceTranscribing = captureVoice.status === "transcribing";
 
   function getSubcategoryOptions(categoryName) {
     const normalized = normalizeTaxonomyName(categoryName);
