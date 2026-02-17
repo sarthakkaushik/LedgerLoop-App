@@ -936,7 +936,6 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
       <p className="hint">
         Describe spending naturally and we'll turn it into expense drafts you can edit before saving.
       </p>
-      <p className="hint">Use currency codes like INR, USD, EUR, GBP, and JPY.</p>
       {taxonomyLoading && <p className="hint">Loading household taxonomy...</p>}
       {taxonomyError && <p className="form-error">{taxonomyError}</p>}
       <div className="stack">
