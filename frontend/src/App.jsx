@@ -1117,15 +1117,16 @@ function AnalyticsPanel({ token }) {
   }, [result]);
 
   async function runQuery(customText) {
-    const query = customText ?? text;
-    if (!query.trim()) return;
+    const query = String(customText ?? text).trim();
+    if (!query) return;
+    setText(query);
     setLoading(true);
     setError("");
     setShowDebug(false);
     try {
       const data = await askAnalysis(token, query);
       setResult(data);
-      if (!customText) setText("");
+      setText("");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1145,7 +1146,7 @@ function AnalyticsPanel({ token }) {
             type="button"
             key={prompt}
             className="btn-ghost prompt-pill"
-            onClick={() => runQuery(prompt)}
+            onClick={() => void runQuery(prompt)}
             disabled={loading}
           >
             {prompt}
@@ -1159,7 +1160,7 @@ function AnalyticsPanel({ token }) {
           onChange={(e) => setText(e.target.value)}
           placeholder="Ask anything about household spending..."
         />
-        <button className="btn-main" onClick={() => runQuery()} disabled={loading}>
+        <button className="btn-main" onClick={() => void runQuery()} disabled={loading}>
           {loading ? "Analyzing..." : "Ask Analytics"}
         </button>
       </div>
