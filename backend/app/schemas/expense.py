@@ -12,6 +12,7 @@ class ExpenseDraft(BaseModel):
     amount: float | None = None
     currency: str | None = None
     category: str | None = None
+    subcategory: str | None = None
     description: str | None = None
     merchant_or_item: str | None = None
     date_incurred: str | None = None
@@ -32,6 +33,7 @@ class ExpenseConfirmEdit(BaseModel):
     amount: float | None = Field(default=None, gt=0)
     currency: str | None = None
     category: str | None = None
+    subcategory: str | None = None
     description: str | None = None
     merchant_or_item: str | None = None
     date_incurred: str | None = None
@@ -47,6 +49,7 @@ class ExpenseConfirmResponse(BaseModel):
     confirmed_count: int
     idempotent_replay: bool
     expenses: list[ExpenseDraft]
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ExpenseFeedItem(BaseModel):
@@ -54,6 +57,7 @@ class ExpenseFeedItem(BaseModel):
     amount: float | None = None
     currency: str
     category: str | None = None
+    subcategory: str | None = None
     description: str | None = None
     merchant_or_item: str | None = None
     date_incurred: str

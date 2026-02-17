@@ -39,6 +39,8 @@ def _default_model_for(provider: LLMProvider) -> str:
         return settings.openai_model
     if provider == LLMProvider.GEMINI:
         return settings.gemini_model
+    if provider == LLMProvider.CEREBRAS:
+        return settings.cerebras_model
     return settings.llm_model
 
 
@@ -47,6 +49,8 @@ def _default_api_key_for(provider: LLMProvider) -> str | None:
         return settings.openai_api_key
     if provider == LLMProvider.GEMINI:
         return settings.gemini_api_key
+    if provider == LLMProvider.CEREBRAS:
+        return settings.cerebras_api_key
     return None
 
 

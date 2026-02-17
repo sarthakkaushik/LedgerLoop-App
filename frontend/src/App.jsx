@@ -1,26 +1,36 @@
 import { useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import {
   askAnalysis,
   confirmExpenses,
+  createTaxonomyCategory,
+  createTaxonomySubcategory,
   createInviteCode,
+  deleteTaxonomyCategory,
+  deleteTaxonomySubcategory,
   deleteExpense,
   deleteHouseholdMember,
   downloadExpenseCsv,
   fetchDashboard,
   fetchExpenseFeed,
   fetchHousehold,
+  fetchTaxonomy,
   joinHousehold,
   loginUser,
   parseExpenseText,
   registerUser,
+  updateTaxonomyCategory,
+  updateTaxonomySubcategory,
 } from "./api";
 
 const tabs = [
-  { id: "log", label: "Chat Log" },
-  { id: "dashboard", label: "Dashboard" },
-  { id: "household", label: "Household" },
-  { id: "analytics", label: "Analytics Chat" },
+  { id: "capture", label: "Capture" },
+  { id: "ledger", label: "Ledger" },
+  { id: "insights", label: "Insights" },
+  { id: "people", label: "People & Access" },
+  { id: "settings", label: "Settings" },
 ];
 
 const initialRegister = {
@@ -35,6 +45,11 @@ const initialLogin = {
   password: "",
 };
 
+const RUPEE_SYMBOL = "\u20B9";
+const EURO_SYMBOL = "\u20ac";
+const POUND_SYMBOL = "\u00a3";
+const YEN_SYMBOL = "\u00a5";
+
 const initialJoin = {
   full_name: "",
   email: "",
@@ -42,24 +57,480 @@ const initialJoin = {
   invite_code: "",
 };
 
-const expenseCategories = [
-  "Groceries",
-  "Food",
-  "Dining",
-  "Transport",
-  "Fuel",
-  "Shopping",
-  "Utilities",
-  "Rent",
-  "EMI",
-  "Healthcare",
-  "Education",
-  "Entertainment",
-  "Travel",
-  "Bills",
-  "Gift",
-  "Others",
+const GLOBAL_CURRENCY_OPTIONS = [
+  { symbol: RUPEE_SYMBOL, code: "INR", name: "Indian Rupee" },
+  { symbol: "$", code: "USD", name: "US Dollar" },
+  { symbol: EURO_SYMBOL, code: "EUR", name: "Euro" },
+  { symbol: POUND_SYMBOL, code: "GBP", name: "British Pound" },
+  { symbol: YEN_SYMBOL, code: "JPY", name: "Japanese Yen" },
+  { symbol: "AED", code: "AED", name: "UAE Dirham" },
 ];
+
+function normalizeTaxonomyName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function ConfirmModal({
+  open,
+  title,
+  description,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  busy = false,
+  onCancel,
+  onConfirm,
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="confirm-backdrop" role="presentation">
+      <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h3 id="confirm-title">{title}</h3>
+        <p>{description}</p>
+        <div className="confirm-actions">
+          <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>
+            {cancelLabel}
+          </button>
+          <button type="button" className="btn-danger" onClick={onConfirm} disabled={busy}>
+            {busy ? "Please wait..." : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PanelSkeleton({ rows = 3 }) {
+  return (
+    <div className="panel-skeleton" aria-hidden="true">
+      <div className="skeleton-line skeleton-line-title" />
+      {Array.from({ length: rows }).map((_, index) => (
+        <div key={index} className="skeleton-line" />
+      ))}
+    </div>
+  );
+}
+
+function SessionTransition() {
+  return (
+    <section className="session-transition">
+      <div className="session-orb" aria-hidden="true" />
+      <h2>Loading your workspace...</h2>
+      <p>Preparing capture, ledger, and insights.</p>
+    </section>
+  );
+}
+
+function QuickAddModal({
+  open,
+  token,
+  source,
+  onClose,
+  onRouteToCapture,
+  onNotify,
+}) {
+  const [text, setText] = useState("");
+  const [result, setResult] = useState(null);
+  const [drafts, setDrafts] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [confirmKey, setConfirmKey] = useState("");
+  const [error, setError] = useState("");
+  const [taxonomy, setTaxonomy] = useState({ categories: [] });
+  const [taxonomyLoading, setTaxonomyLoading] = useState(false);
+  const [taxonomyError, setTaxonomyError] = useState("");
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+
+  const taxonomyCategories = useMemo(
+    () => (Array.isArray(taxonomy?.categories) ? taxonomy.categories : []),
+    [taxonomy]
+  );
+  const taxonomyCategoryOptions = useMemo(
+    () => taxonomyCategories.map((category) => category.name),
+    [taxonomyCategories]
+  );
+
+  function getSubcategoryOptions(categoryName) {
+    const normalized = normalizeTaxonomyName(categoryName);
+    if (!normalized) return [];
+    const match = taxonomyCategories.find(
+      (category) => normalizeTaxonomyName(category.name) === normalized
+    );
+    return (match?.subcategories || []).map((subcategory) => subcategory.name);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    async function loadTaxonomy() {
+      setTaxonomyLoading(true);
+      setTaxonomyError("");
+      try {
+        const data = await fetchTaxonomy(token);
+        if (!cancelled) {
+          setTaxonomy(data);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTaxonomyError(err.message);
+        }
+      } finally {
+        if (!cancelled) {
+          setTaxonomyLoading(false);
+        }
+      }
+    }
+    loadTaxonomy();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, token]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void handleAttemptClose();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, loading, confirming, text, drafts, result]);
+
+  function resetModalState() {
+    setText("");
+    setResult(null);
+    setDrafts([]);
+    setLoading(false);
+    setConfirming(false);
+    setConfirmKey("");
+    setError("");
+    setDiscardConfirmOpen(false);
+  }
+
+  function buildIdempotencyKey() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return `quick-add-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function updateDraft(index, field, value) {
+    setDrafts((prev) =>
+      prev.map((draft, currentIndex) => {
+        if (currentIndex !== index) return draft;
+        const next = { ...draft, [field]: value };
+        if (field === "category") {
+          const options = getSubcategoryOptions(value);
+          if (
+            next.subcategory &&
+            !options.some(
+              (subcategory) =>
+                normalizeTaxonomyName(subcategory) === normalizeTaxonomyName(next.subcategory)
+            )
+          ) {
+            next.subcategory = "";
+          }
+        }
+        if (field === "subcategory" && !value) {
+          next.subcategory = "";
+        }
+        return next;
+      })
+    );
+  }
+
+  async function handleParse() {
+    if (!text.trim()) return;
+    setLoading(true);
+    setError("");
+    setConfirmKey("");
+    try {
+      const parsed = await parseExpenseText(token, text);
+      setResult(parsed);
+      setDrafts(parsed.expenses ?? []);
+      setConfirmKey(buildIdempotencyKey());
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSaveToLedger() {
+    const confirmable = drafts.filter((draft) => draft.id);
+    if (confirmable.length === 0) {
+      setError("No confirmable draft entries found.");
+      return;
+    }
+
+    setConfirming(true);
+    setError("");
+    try {
+      const idempotencyKey = confirmKey || buildIdempotencyKey();
+      if (!confirmKey) {
+        setConfirmKey(idempotencyKey);
+      }
+      const data = await confirmExpenses(token, {
+        idempotency_key: idempotencyKey,
+        expenses: confirmable.map((draft) => ({
+          draft_id: draft.id,
+          amount:
+            draft.amount === "" || draft.amount === null || draft.amount === undefined
+              ? null
+              : Number(draft.amount),
+          currency: draft.currency || null,
+          category: draft.category || null,
+          subcategory: draft.subcategory || null,
+          description: draft.description || null,
+          merchant_or_item: draft.merchant_or_item || null,
+          date_incurred: draft.date_incurred || null,
+          is_recurring: Boolean(draft.is_recurring),
+        })),
+      });
+      onNotify(`Quick Add saved ${data.confirmed_count} expense(s) to ledger.`);
+      resetModalState();
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  function handleSendToCapture() {
+    const captureText = text.trim();
+    if (!captureText) {
+      onNotify("Type your clarification first, then send to Capture.");
+      return;
+    }
+    onRouteToCapture(captureText);
+    onNotify("Moved to Capture for detailed review.");
+    resetModalState();
+    onClose();
+  }
+
+  async function handleAttemptClose() {
+    if (loading || confirming) return;
+    const hasUnsavedWork = Boolean(text.trim() || drafts.length > 0 || result);
+    if (hasUnsavedWork) {
+      setDiscardConfirmOpen(true);
+      return;
+    }
+    resetModalState();
+    onClose();
+  }
+
+  function resolveSourceLabel(value) {
+    if (value === "shortcut") return "Shortcut";
+    if (value === "fab") return "Mobile FAB";
+    return "Header";
+  }
+
+  if (!open) return null;
+
+  return (
+    <>
+      <div
+        className="quick-add-backdrop"
+        role="presentation"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) {
+            void handleAttemptClose();
+          }
+        }}
+      >
+        <section className="quick-add-modal" role="dialog" aria-modal="true" aria-label="Quick Add Expense">
+          <div className="quick-add-header">
+            <div>
+              <h3>Quick Add</h3>
+              <p className="hint">Log expenses instantly from any workspace tab.</p>
+            </div>
+            <div className="member-actions">
+              <span className="tool-chip">{resolveSourceLabel(source)}</span>
+              <button type="button" className="btn-ghost" onClick={() => void handleAttemptClose()}>
+                Close
+              </button>
+            </div>
+          </div>
+
+          {taxonomyLoading && <p className="hint subtle-loader">Loading category options...</p>}
+          {taxonomyError && <p className="form-error">{taxonomyError}</p>}
+          {error && <p className="form-error">{error}</p>}
+          <div className="stack">
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={4}
+              placeholder={`Example: Paid ${RUPEE_SYMBOL}1200 for electricity yesterday and ${RUPEE_SYMBOL}300 for groceries`}
+              autoFocus
+            />
+            <div className="quick-add-actions">
+              <button className="btn-main" onClick={handleParse} disabled={loading || confirming}>
+                {loading ? "Reading..." : "Create Drafts"}
+              </button>
+              {result?.needs_clarification && (
+                <button className="btn-ghost" onClick={handleSendToCapture} disabled={loading || confirming}>
+                  Send to Capture Review
+                </button>
+              )}
+            </div>
+          </div>
+
+          {loading && <p className="hint subtle-loader">Reading your expense note...</p>}
+
+          {result && (
+            <article className="result-card">
+              <h4>Assistant</h4>
+              <p className="assistant-bubble">
+                {result.assistant_message || "Drafts are ready to review and save."}
+              </p>
+              <p className="hint">
+                Status:{" "}
+                <strong>{result.needs_clarification ? "Need one more detail" : "Ready to save"}</strong>
+              </p>
+              {Array.isArray(result.clarification_questions) && result.clarification_questions.length > 0 && (
+                <ul>
+                  {result.clarification_questions.map((question, index) => (
+                    <li key={`${question}-${index}`}>{question}</li>
+                  ))}
+                </ul>
+              )}
+            </article>
+          )}
+
+          {drafts.length > 0 && (
+            <article className="result-card">
+              <div className="row draft-header">
+                <h4>Review Drafts</h4>
+                <button
+                  className="btn-main"
+                  onClick={handleSaveToLedger}
+                  disabled={loading || confirming}
+                >
+                  {confirming ? "Saving..." : "Save to Ledger"}
+                </button>
+              </div>
+              <div className="quick-add-drafts">
+                {drafts.map((draft, index) => (
+                  <article key={draft.id || index} className="expense-item editable">
+                    <div className="row-grid">
+                      <label>
+                        Amount
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={draft.amount ?? ""}
+                          onChange={(e) => updateDraft(index, "amount", e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Currency
+                        <input
+                          value={draft.currency || ""}
+                          placeholder="INR"
+                          onChange={(e) => updateDraft(index, "currency", e.target.value.toUpperCase())}
+                        />
+                      </label>
+                      <label>
+                        Category
+                        <select
+                          value={draft.category || ""}
+                          onChange={(e) => updateDraft(index, "category", e.target.value)}
+                        >
+                          <option value="">Select category</option>
+                          {draft.category &&
+                            !taxonomyCategoryOptions.some(
+                              (category) =>
+                                normalizeTaxonomyName(category) === normalizeTaxonomyName(draft.category)
+                            ) && <option value={draft.category}>{draft.category}</option>}
+                          {taxonomyCategoryOptions.map((category) => (
+                            <option key={category} value={category}>
+                              {category}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Subcategory
+                        <select
+                          value={draft.subcategory || ""}
+                          onChange={(e) => updateDraft(index, "subcategory", e.target.value)}
+                          disabled={!draft.category}
+                        >
+                          <option value="">Select subcategory</option>
+                          {draft.subcategory &&
+                            !getSubcategoryOptions(draft.category).some(
+                              (subcategory) =>
+                                normalizeTaxonomyName(subcategory) ===
+                                normalizeTaxonomyName(draft.subcategory)
+                            ) && <option value={draft.subcategory}>{draft.subcategory}</option>}
+                          {getSubcategoryOptions(draft.category).map((subcategory) => (
+                            <option key={`${draft.category}-${subcategory}`} value={subcategory}>
+                              {subcategory}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Date
+                        <input
+                          type="date"
+                          value={draft.date_incurred || ""}
+                          onChange={(e) => updateDraft(index, "date_incurred", e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Description
+                        <input
+                          value={draft.description || ""}
+                          onChange={(e) => updateDraft(index, "description", e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Merchant / Item
+                        <input
+                          value={draft.merchant_or_item || ""}
+                          onChange={(e) => updateDraft(index, "merchant_or_item", e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <label className="inline-toggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(draft.is_recurring)}
+                        onChange={(e) => updateDraft(index, "is_recurring", e.target.checked)}
+                      />
+                      Recurring expense
+                    </label>
+                  </article>
+                ))}
+              </div>
+            </article>
+          )}
+        </section>
+      </div>
+
+      <ConfirmModal
+        open={discardConfirmOpen}
+        title="Discard quick add draft?"
+        description="You have unsaved quick-add changes. Do you want to discard them?"
+        confirmLabel="Discard"
+        onCancel={() => setDiscardConfirmOpen(false)}
+        onConfirm={() => {
+          setDiscardConfirmOpen(false);
+          resetModalState();
+          onClose();
+        }}
+      />
+    </>
+  );
+}
 
 function AuthCard({ onAuthSuccess }) {
   const [mode, setMode] = useState("register");
@@ -94,34 +565,38 @@ function AuthCard({ onAuthSuccess }) {
   return (
     <section className="auth-card">
       <div className="brand-slab">
-        <p className="kicker">Family Ledger</p>
+        <p className="kicker">Household Finance</p>
         <h1>LedgerLoop</h1>
         <p className="sub">
-          Chat your expenses, review drafts, and tune your LLM parser from one place.
+          Describe spend in natural language, review smart drafts, then save clean expense
+          records for your household.
         </p>
         <div className="hero-visual" aria-hidden="true">
           <article className="mini-invoice">
-            <p className="tiny">Shared Wallet</p>
-            <strong>$1,876.50</strong>
+            <p className="tiny">Household Balance</p>
+            <strong>{`${RUPEE_SYMBOL}18,765.40`}</strong>
             <small>Updated today</small>
             <div className="invoice-row">
-              <span>Auto split</span>
-              <span>ON</span>
+              <span>Auto categories</span>
+              <span>Enabled</span>
             </div>
           </article>
           <article className="credit-panel">
-            <p className="tiny">LedgerLoop Card</p>
-            <strong>**** 2204</strong>
-            <div className="card-footer">
-              <span>VISA</span>
-              <span>Secure</span>
+            <p className="tiny">Global Currencies</p>
+            <div className="currency-chip-row">
+              {GLOBAL_CURRENCY_OPTIONS.map((currency) => (
+                <span className="currency-chip" key={currency.code} title={`${currency.name} (${currency.code})`}>
+                  <span>{currency.symbol}</span>
+                  <code>{currency.code}</code>
+                </span>
+              ))}
             </div>
           </article>
         </div>
         <div className="logo-strip" aria-hidden="true">
-          <span>autolog</span>
-          <span>familysafe</span>
-          <span>spendflow</span>
+          <span>Smart capture</span>
+          <span>Household ledger</span>
+          <span>Cross-currency</span>
         </div>
       </div>
       <div className="auth-panel">
@@ -293,7 +768,7 @@ function AuthCard({ onAuthSuccess }) {
   );
 }
 
-function ExpenseLogPanel({ token }) {
+function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
   const [text, setText] = useState("");
   const [result, setResult] = useState(null);
   const [drafts, setDrafts] = useState([]);
@@ -302,6 +777,67 @@ function ExpenseLogPanel({ token }) {
   const [confirmResult, setConfirmResult] = useState(null);
   const [confirmKey, setConfirmKey] = useState("");
   const [error, setError] = useState("");
+  const [taxonomy, setTaxonomy] = useState({ categories: [] });
+  const [taxonomyLoading, setTaxonomyLoading] = useState(false);
+  const [taxonomyError, setTaxonomyError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTaxonomy() {
+      setTaxonomyLoading(true);
+      setTaxonomyError("");
+      try {
+        const data = await fetchTaxonomy(token);
+        if (!cancelled) {
+          setTaxonomy(data);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTaxonomyError(err.message);
+        }
+      } finally {
+        if (!cancelled) {
+          setTaxonomyLoading(false);
+        }
+      }
+    }
+    loadTaxonomy();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    const incoming = String(prefilledText || "").trim();
+    if (!incoming) return;
+    setText(incoming);
+    setResult(null);
+    setDrafts([]);
+    setConfirmResult(null);
+    setConfirmKey("");
+    setError("");
+    if (typeof onPrefilledTextConsumed === "function") {
+      onPrefilledTextConsumed();
+    }
+  }, [prefilledText]);
+
+  const taxonomyCategories = useMemo(
+    () => (Array.isArray(taxonomy?.categories) ? taxonomy.categories : []),
+    [taxonomy]
+  );
+  const taxonomyCategoryOptions = useMemo(
+    () => taxonomyCategories.map((category) => category.name),
+    [taxonomyCategories]
+  );
+
+  function getSubcategoryOptions(categoryName) {
+    const normalized = normalizeTaxonomyName(categoryName);
+    if (!normalized) return [];
+    const match = taxonomyCategories.find(
+      (category) => normalizeTaxonomyName(category.name) === normalized
+    );
+    return (match?.subcategories || []).map((subcategory) => subcategory.name);
+  }
 
   async function handleParse() {
     if (!text.trim()) return;
@@ -322,11 +858,31 @@ function ExpenseLogPanel({ token }) {
   }
 
   function updateDraft(index, field, value) {
-    setDrafts((prev) =>
-      prev.map((draft, currentIndex) =>
-        currentIndex === index ? { ...draft, [field]: value } : draft
-      )
-    );
+    setDrafts((prev) => {
+      return prev.map((draft, currentIndex) => {
+        if (currentIndex !== index) return draft;
+        const next = { ...draft, [field]: value };
+
+        if (field === "category") {
+          const options = getSubcategoryOptions(value);
+          if (
+            next.subcategory &&
+            !options.some(
+              (subcategory) =>
+                normalizeTaxonomyName(subcategory) === normalizeTaxonomyName(next.subcategory)
+            )
+          ) {
+            next.subcategory = "";
+          }
+        }
+
+        if (field === "subcategory" && !value) {
+          next.subcategory = "";
+        }
+
+        return next;
+      });
+    });
   }
 
   function buildIdempotencyKey() {
@@ -358,6 +914,7 @@ function ExpenseLogPanel({ token }) {
               : Number(draft.amount),
           currency: draft.currency || null,
           category: draft.category || null,
+          subcategory: draft.subcategory || null,
           description: draft.description || null,
           merchant_or_item: draft.merchant_or_item || null,
           date_incurred: draft.date_incurred || null,
@@ -375,22 +932,24 @@ function ExpenseLogPanel({ token }) {
 
   return (
     <section className="panel">
-      <h2>Chat Expense Drafting</h2>
+      <h2>Capture Expenses</h2>
       <p className="hint">
-        Chat naturally, or log spends directly. Example:{" "}
-        <code>Bought groceries for 500 and paid 1200 for electricity yesterday</code>
+        Describe spending naturally and we'll turn it into expense drafts you can edit before saving.
       </p>
+      {taxonomyLoading && <p className="hint">Loading household taxonomy...</p>}
+      {taxonomyError && <p className="form-error">{taxonomyError}</p>}
       <div className="stack">
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={5}
-          placeholder="Type your message..."
+          placeholder={`Example: Bought groceries for ${RUPEE_SYMBOL}500 and paid ${RUPEE_SYMBOL}1200 for electricity yesterday`}
         />
         <button className="btn-main" onClick={handleParse} disabled={loading}>
-          {loading ? "Thinking..." : "Send"}
+          {loading ? "Preparing..." : "Create Drafts"}
         </button>
       </div>
+      {loading && <p className="hint subtle-loader">Preparing your expense draft...</p>}
       {error && <p className="form-error">{error}</p>}
 
       {result && (
@@ -400,17 +959,17 @@ function ExpenseLogPanel({ token }) {
             {result.assistant_message ? (
               <article className="assistant-bubble">{result.assistant_message}</article>
             ) : (
-              <p>Draft parsing completed.</p>
+              <p>Draft entries are ready to review.</p>
             )}
             <p className="hint">
-              Mode: <strong>{result.mode === "chat" ? "Conversation" : "Expense Parsing"}</strong>
+              Mode: <strong>{result.mode === "chat" ? "Conversation" : "Smart Capture"}</strong>
             </p>
           </div>
           <div className="result-card">
             <h3>Clarifications</h3>
             <p>
               Status:{" "}
-              <strong>{result.needs_clarification ? "Needs clarification" : "Ready to confirm"}</strong>
+              <strong>{result.needs_clarification ? "Need one more detail" : "Ready to save"}</strong>
             </p>
             {result.clarification_questions.length === 0 ? (
               <p>No questions.</p>
@@ -428,9 +987,9 @@ function ExpenseLogPanel({ token }) {
       {drafts.length > 0 && (
         <div className="result-card draft-editor">
           <div className="row draft-header">
-            <h3>Review and Confirm Drafts</h3>
+            <h3>Review Drafts</h3>
             <button className="btn-main" onClick={handleConfirm} disabled={confirming}>
-              {confirming ? "Confirming..." : "Confirm Expenses"}
+              {confirming ? "Saving..." : "Save to Ledger"}
             </button>
           </div>
           {drafts.map((draft, idx) => (
@@ -450,6 +1009,7 @@ function ExpenseLogPanel({ token }) {
                   Currency
                   <input
                     value={draft.currency || ""}
+                    placeholder="INR"
                     onChange={(e) => updateDraft(idx, "currency", e.target.value.toUpperCase())}
                   />
                 </label>
@@ -461,13 +1021,35 @@ function ExpenseLogPanel({ token }) {
                   >
                     <option value="">Select category</option>
                     {draft.category &&
-                      !expenseCategories.some(
+                      !taxonomyCategoryOptions.some(
                         (category) =>
-                          category.toLowerCase() === draft.category.toLowerCase()
+                          normalizeTaxonomyName(category) ===
+                          normalizeTaxonomyName(draft.category)
                       ) && <option value={draft.category}>{draft.category}</option>}
-                    {expenseCategories.map((category) => (
+                    {taxonomyCategoryOptions.map((category) => (
                       <option key={category} value={category}>
                         {category}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Subcategory
+                  <select
+                    value={draft.subcategory || ""}
+                    onChange={(e) => updateDraft(idx, "subcategory", e.target.value)}
+                    disabled={!draft.category}
+                  >
+                    <option value="">Select subcategory</option>
+                    {draft.subcategory &&
+                      !getSubcategoryOptions(draft.category).some(
+                        (subcategory) =>
+                          normalizeTaxonomyName(subcategory) ===
+                          normalizeTaxonomyName(draft.subcategory)
+                      ) && <option value={draft.subcategory}>{draft.subcategory}</option>}
+                    {getSubcategoryOptions(draft.category).map((subcategory) => (
+                      <option key={`${draft.category}-${subcategory}`} value={subcategory}>
+                        {subcategory}
                       </option>
                     ))}
                   </select>
@@ -506,10 +1088,19 @@ function ExpenseLogPanel({ token }) {
             </article>
           ))}
           {confirmResult && (
-            <p className="form-ok">
-              Confirmed {confirmResult.confirmed_count} expense(s)
-              {confirmResult.idempotent_replay ? " (idempotent replay)." : "."}
-            </p>
+            <>
+              <p className="form-ok">
+                Saved {confirmResult.confirmed_count} expense(s) to ledger
+                {confirmResult.idempotent_replay ? " (idempotent replay)." : "."}
+              </p>
+              {Array.isArray(confirmResult.warnings) && confirmResult.warnings.length > 0 && (
+                <ul className="taxonomy-warnings">
+                  {confirmResult.warnings.map((warning, index) => (
+                    <li key={`${warning}-${index}`}>{warning}</li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </div>
       )}
@@ -520,22 +1111,20 @@ function ExpenseLogPanel({ token }) {
 function HouseholdPanel({ token, user }) {
   const [household, setHousehold] = useState(null);
   const [feed, setFeed] = useState(null);
-  const [statusFilter, setStatusFilter] = useState("confirmed");
   const [loading, setLoading] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [deletingMemberId, setDeletingMemberId] = useState(null);
-  const [deletingExpenseId, setDeletingExpenseId] = useState(null);
-  const [downloadingCsv, setDownloadingCsv] = useState(false);
+  const [memberToRemove, setMemberToRemove] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  async function loadHouseholdData() {
+  async function loadPeopleData() {
     setLoading(true);
     setError("");
     try {
       const [householdData, feedData] = await Promise.all([
         fetchHousehold(token),
-        fetchExpenseFeed(token, { status: statusFilter, limit: 100 }),
+        fetchExpenseFeed(token, { status: "confirmed", limit: 100 }),
       ]);
       setHousehold(householdData);
       setFeed(feedData);
@@ -547,8 +1136,8 @@ function HouseholdPanel({ token, user }) {
   }
 
   useEffect(() => {
-    loadHouseholdData();
-  }, [statusFilter, token]);
+    loadPeopleData();
+  }, [token]);
 
   const userBoard = useMemo(() => {
     if (!feed?.items?.length) return [];
@@ -575,7 +1164,7 @@ function HouseholdPanel({ token, user }) {
     try {
       const data = await createInviteCode(token);
       setMessage(`New invite code: ${data.invite_code}`);
-      await loadHouseholdData();
+      await loadPeopleData();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -583,19 +1172,17 @@ function HouseholdPanel({ token, user }) {
     }
   }
 
-  async function handleDeleteMember(member) {
-    const allowDelete = window.confirm(
-      `Remove access for ${member.full_name} (${member.email})? Their past expenses will stay in the ledger.`
-    );
-    if (!allowDelete) return;
+  async function handleConfirmMemberRemoval() {
+    if (!memberToRemove) return;
 
-    setDeletingMemberId(member.id);
+    setDeletingMemberId(memberToRemove.id);
     setError("");
     setMessage("");
     try {
-      const data = await deleteHouseholdMember(token, member.id);
+      const data = await deleteHouseholdMember(token, memberToRemove.id);
       setMessage(data.message);
-      await loadHouseholdData();
+      setMemberToRemove(null);
+      await loadPeopleData();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -603,56 +1190,19 @@ function HouseholdPanel({ token, user }) {
     }
   }
 
-  async function handleDeleteExpense(item) {
-    const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
-    if (!canDelete) return;
-
-    const allowDelete = window.confirm(
-      `Delete this expense for ${item.date_incurred} (${Number(item.amount || 0).toFixed(2)} ${item.currency})?`
-    );
-    if (!allowDelete) return;
-
-    setDeletingExpenseId(item.id);
-    setError("");
-    setMessage("");
-    try {
-      const data = await deleteExpense(token, item.id);
-      setMessage(data.message || "Expense deleted.");
-      await loadHouseholdData();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setDeletingExpenseId(null);
-    }
-  }
-
-  async function handleDownloadCsv() {
-    setDownloadingCsv(true);
-    setError("");
-    setMessage("");
-    try {
-      await downloadExpenseCsv(token, { status: statusFilter });
-      setMessage("CSV download started.");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setDownloadingCsv(false);
-    }
-  }
-
   return (
     <section className="panel">
       <div className="dashboard-header">
-        <h2>Household Collaboration</h2>
-        <button className="btn-ghost" type="button" onClick={loadHouseholdData} disabled={loading}>
+        <h2>People & Access</h2>
+        <button className="btn-ghost" type="button" onClick={loadPeopleData} disabled={loading}>
           Refresh
         </button>
       </div>
       <p className="hint">
-        Use invite code to add your spouse. Everyone in this household can see who logged each expense.
+        Invite members and manage access. Everyone in this household can see who logged each expense.
       </p>
 
-      {loading && <p>Loading household details...</p>}
+      {loading && <PanelSkeleton rows={6} />}
       {error && <p className="form-error">{error}</p>}
       {message && <p className="form-ok">{message}</p>}
 
@@ -670,9 +1220,9 @@ function HouseholdPanel({ token, user }) {
               <p className="metric-sub">Logged in as {user?.full_name}</p>
             </article>
             <article className="stat-card">
-              <p className="kicker">Visible Entries</p>
+              <p className="kicker">Confirmed Entries</p>
               <h3>{feed?.items?.length || 0}</h3>
-              <p className="metric-sub">of {feed?.total_count || 0} total in filter</p>
+              <p className="metric-sub">of {feed?.total_count || 0} visible</p>
             </article>
           </div>
 
@@ -693,7 +1243,7 @@ function HouseholdPanel({ token, user }) {
               </div>
               {user?.role === "admin" ? (
                 <>
-                  <p className="hint">Share this code with your wife to join this household.</p>
+                  <p className="hint">Share this code with a member to join this household.</p>
                   <p className="invite-code">{household.invite_code || "No code yet"}</p>
                 </>
               ) : (
@@ -716,7 +1266,7 @@ function HouseholdPanel({ token, user }) {
                         <button
                           className="btn-danger"
                           type="button"
-                          onClick={() => handleDeleteMember(member)}
+                          onClick={() => setMemberToRemove(member)}
                           disabled={deletingMemberId === member.id}
                         >
                           {deletingMemberId === member.id ? "Removing..." : "Remove Access"}
@@ -731,7 +1281,7 @@ function HouseholdPanel({ token, user }) {
             <article className="result-card">
               <h3>Spend by Person</h3>
               {userBoard.length === 0 ? (
-                <p>No expense rows in this filter.</p>
+                <p>No confirmed entries yet.</p>
               ) : (
                 <div className="bar-list">
                   {userBoard.map((item) => (
@@ -745,89 +1295,610 @@ function HouseholdPanel({ token, user }) {
                           }}
                         />
                       </div>
-                      <strong>{item.total.toFixed(2)}</strong>
+                      <strong>{formatCurrencyValue(item.total)}</strong>
                     </div>
                   ))}
                 </div>
               )}
             </article>
           </div>
-
-          <article className="result-card household-ledger">
-            <div className="row draft-header">
-              <h3>Expense Ledger (Who Logged What)</h3>
-              <div className="member-actions">
-                <label>
-                  Status
-                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                    <option value="confirmed">Confirmed</option>
-                    <option value="draft">Draft</option>
-                    <option value="all">All</option>
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  className="btn-ghost"
-                  onClick={handleDownloadCsv}
-                  disabled={downloadingCsv}
-                >
-                  {downloadingCsv ? "Downloading..." : "Download CSV"}
-                </button>
-              </div>
-            </div>
-            {!feed?.items?.length ? (
-              <p>No expenses in this filter.</p>
-            ) : (
-              <div className="table-wrap">
-                <table className="analytics-table">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Logged By</th>
-                      <th>Category</th>
-                      <th>Description</th>
-                      <th>Amount</th>
-                      <th>Status</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {feed.items.map((item) => (
-                      <tr key={item.id}>
-                        <td>{item.date_incurred}</td>
-                        <td>{item.logged_by_name}</td>
-                        <td>{item.category || "Other"}</td>
-                        <td>{item.description || item.merchant_or_item || "-"}</td>
-                        <td>
-                          {Number(item.amount || 0).toFixed(2)} {item.currency}
-                        </td>
-                        <td>{item.status}</td>
-                        <td>
-                          {(user?.role === "admin" || item.logged_by_user_id === user?.id) && (
-                            <button
-                              type="button"
-                              className="btn-danger"
-                              onClick={() => handleDeleteExpense(item)}
-                              disabled={deletingExpenseId === item.id}
-                            >
-                              {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </article>
         </>
       )}
+
+      <ConfirmModal
+        open={Boolean(memberToRemove)}
+        title="Remove member access?"
+        description={
+          memberToRemove
+            ? `Remove ${memberToRemove.full_name} (${memberToRemove.email}) from this household? Their past expenses will remain in the ledger.`
+            : ""
+        }
+        confirmLabel="Remove Access"
+        busy={Boolean(memberToRemove && deletingMemberId === memberToRemove.id)}
+        onCancel={() => setMemberToRemove(null)}
+        onConfirm={handleConfirmMemberRemoval}
+      />
     </section>
   );
 }
 
-function DashboardPanel({ token }) {
+function LedgerPanel({ token, user }) {
+  const [feed, setFeed] = useState(null);
+  const [statusFilter, setStatusFilter] = useState("confirmed");
+  const [loading, setLoading] = useState(false);
+  const [deletingExpenseId, setDeletingExpenseId] = useState(null);
+  const [downloadingCsv, setDownloadingCsv] = useState(false);
+  const [expenseToDelete, setExpenseToDelete] = useState(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  async function loadLedgerData() {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchExpenseFeed(token, { status: statusFilter, limit: 200 });
+      setFeed(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadLedgerData();
+  }, [statusFilter, token]);
+
+  async function handleDownloadCsv() {
+    setDownloadingCsv(true);
+    setError("");
+    setMessage("");
+    try {
+      await downloadExpenseCsv(token, { status: statusFilter });
+      setMessage("CSV download started.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDownloadingCsv(false);
+    }
+  }
+
+  async function handleDeleteExpense() {
+    if (!expenseToDelete) return;
+    setDeletingExpenseId(expenseToDelete.id);
+    setError("");
+    setMessage("");
+    try {
+      const data = await deleteExpense(token, expenseToDelete.id);
+      setMessage(data.message || "Expense deleted.");
+      setExpenseToDelete(null);
+      await loadLedgerData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingExpenseId(null);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <div className="dashboard-header">
+        <h2>Ledger</h2>
+        <button className="btn-ghost" type="button" onClick={loadLedgerData} disabled={loading}>
+          Refresh
+        </button>
+      </div>
+      <p className="hint">Review logged expenses, export CSV, and clean incorrect entries.</p>
+      {error && <p className="form-error">{error}</p>}
+      {message && <p className="form-ok">{message}</p>}
+
+      {loading ? (
+        <PanelSkeleton rows={7} />
+      ) : (
+        <article className="result-card household-ledger">
+          <div className="row draft-header">
+            <h3>Expense Ledger</h3>
+            <div className="member-actions">
+              <label>
+                Status
+                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                  <option value="confirmed">Confirmed</option>
+                  <option value="draft">Draft</option>
+                  <option value="all">All</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={handleDownloadCsv}
+                disabled={downloadingCsv}
+              >
+                {downloadingCsv ? "Downloading..." : "Download CSV"}
+              </button>
+            </div>
+          </div>
+          {!feed?.items?.length ? (
+            <p>No expenses in this filter.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="analytics-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Logged By</th>
+                    <th>Category</th>
+                    <th>Subcategory</th>
+                    <th>Description</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {feed.items.map((item) => (
+                    <tr key={item.id}>
+                      <td>{item.date_incurred}</td>
+                      <td>{item.logged_by_name}</td>
+                      <td>{item.category || "Other"}</td>
+                      <td>{item.subcategory || "-"}</td>
+                      <td>{item.description || item.merchant_or_item || "-"}</td>
+                      <td>{formatCurrencyValue(item.amount, item.currency)}</td>
+                      <td>{item.status}</td>
+                      <td>
+                        {(user?.role === "admin" || item.logged_by_user_id === user?.id) && (
+                          <button
+                            type="button"
+                            className="btn-danger"
+                            onClick={() => setExpenseToDelete(item)}
+                            disabled={deletingExpenseId === item.id}
+                          >
+                            {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </article>
+      )}
+
+      <ConfirmModal
+        open={Boolean(expenseToDelete)}
+        title="Delete this expense?"
+        description={
+          expenseToDelete
+            ? `Delete expense on ${expenseToDelete.date_incurred} for ${formatCurrencyValue(
+                expenseToDelete.amount,
+                expenseToDelete.currency
+              )}?`
+            : ""
+        }
+        confirmLabel="Delete Expense"
+        busy={Boolean(expenseToDelete && deletingExpenseId === expenseToDelete.id)}
+        onCancel={() => setExpenseToDelete(null)}
+        onConfirm={handleDeleteExpense}
+      />
+    </section>
+  );
+}
+
+function SettingsPanel({ token, user }) {
+  const [taxonomy, setTaxonomy] = useState({ categories: [] });
+  const [loading, setLoading] = useState(false);
+  const [taxonomyBusy, setTaxonomyBusy] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newSubcategoryByCategory, setNewSubcategoryByCategory] = useState({});
+  const [editingCategoryId, setEditingCategoryId] = useState(null);
+  const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [editingSubcategoryId, setEditingSubcategoryId] = useState(null);
+  const [editingSubcategoryName, setEditingSubcategoryName] = useState("");
+  const [deactivateTarget, setDeactivateTarget] = useState(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const isAdmin = user?.role === "admin";
+
+  async function loadTaxonomyData() {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchTaxonomy(token);
+      setTaxonomy(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadTaxonomyData();
+  }, [token]);
+
+  const taxonomyCategories = useMemo(
+    () => (Array.isArray(taxonomy?.categories) ? taxonomy.categories : []),
+    [taxonomy]
+  );
+
+  function updateSubcategoryInput(categoryId, value) {
+    setNewSubcategoryByCategory((prev) => ({ ...prev, [categoryId]: value }));
+  }
+
+  async function handleCreateCategory() {
+    const name = newCategoryName.trim();
+    if (!name || !isAdmin) return;
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await createTaxonomyCategory(token, { name });
+      setTaxonomy(data);
+      setNewCategoryName("");
+      setMessage(`Added category "${name}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  function startCategoryRename(category) {
+    if (!isAdmin || taxonomyBusy) return;
+    setEditingSubcategoryId(null);
+    setEditingSubcategoryName("");
+    setEditingCategoryId(category.id);
+    setEditingCategoryName(category.name);
+  }
+
+  function cancelCategoryRename() {
+    setEditingCategoryId(null);
+    setEditingCategoryName("");
+  }
+
+  async function saveCategoryRename(category) {
+    if (!isAdmin || taxonomyBusy || editingCategoryId !== category.id) return;
+    const nextName = editingCategoryName.trim();
+    if (!nextName) {
+      setError("Category name cannot be empty.");
+      return;
+    }
+    if (nextName === category.name) {
+      cancelCategoryRename();
+      return;
+    }
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await updateTaxonomyCategory(token, category.id, { name: nextName });
+      setTaxonomy(data);
+      cancelCategoryRename();
+      setMessage(`Renamed category to "${nextName.trim()}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  async function handleCreateSubcategory(category) {
+    if (!isAdmin) return;
+    const name = String(newSubcategoryByCategory[category.id] || "").trim();
+    if (!name) return;
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await createTaxonomySubcategory(token, category.id, { name });
+      setTaxonomy(data);
+      updateSubcategoryInput(category.id, "");
+      setMessage(`Added subcategory "${name}" under "${category.name}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  function startSubcategoryRename(category, subcategory) {
+    if (!isAdmin || taxonomyBusy) return;
+    setEditingCategoryId(null);
+    setEditingCategoryName("");
+    setEditingSubcategoryId(subcategory.id);
+    setEditingSubcategoryName(subcategory.name);
+  }
+
+  function cancelSubcategoryRename() {
+    setEditingSubcategoryId(null);
+    setEditingSubcategoryName("");
+  }
+
+  async function saveSubcategoryRename(category, subcategory) {
+    if (!isAdmin || taxonomyBusy || editingSubcategoryId !== subcategory.id) return;
+    const nextName = editingSubcategoryName.trim();
+    if (!nextName) {
+      setError("Subcategory name cannot be empty.");
+      return;
+    }
+    if (nextName === subcategory.name) {
+      cancelSubcategoryRename();
+      return;
+    }
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const data = await updateTaxonomySubcategory(token, subcategory.id, { name: nextName });
+      setTaxonomy(data);
+      cancelSubcategoryRename();
+      setMessage(`Renamed subcategory to "${nextName.trim()}" under "${category.name}".`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  async function handleConfirmDeactivate() {
+    if (!deactivateTarget || !isAdmin) return;
+    setTaxonomyBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      let data;
+      if (deactivateTarget.type === "category") {
+        data = await deleteTaxonomyCategory(token, deactivateTarget.category.id);
+        setMessage(`Deactivated category "${deactivateTarget.category.name}".`);
+      } else {
+        data = await deleteTaxonomySubcategory(token, deactivateTarget.subcategory.id);
+        setMessage(`Deactivated subcategory "${deactivateTarget.subcategory.name}".`);
+      }
+      setTaxonomy(data);
+      setDeactivateTarget(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTaxonomyBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <div className="dashboard-header">
+        <h2>Settings</h2>
+        <button
+          className="btn-ghost"
+          type="button"
+          onClick={loadTaxonomyData}
+          disabled={loading || taxonomyBusy}
+        >
+          Refresh
+        </button>
+      </div>
+      <p className="hint">Configure categories used during AI expense capture and review.</p>
+      {error && <p className="form-error">{error}</p>}
+      {message && <p className="form-ok">{message}</p>}
+
+      {loading ? (
+        <PanelSkeleton rows={6} />
+      ) : !isAdmin ? (
+        <article className="result-card">
+          <h3>Categories & Subcategories</h3>
+          <p className="hint">Only admin can manage taxonomy settings.</p>
+          <p>{taxonomyCategories.length} categories are configured for this household.</p>
+        </article>
+      ) : (
+        <article className="result-card taxonomy-manager">
+          <div className="row draft-header">
+            <h3>Categories & Subcategories</h3>
+            <span className="tool-chip">{taxonomyCategories.length} categories</span>
+          </div>
+
+          <div className="taxonomy-create-row">
+            <input
+              value={newCategoryName}
+              onChange={(e) => setNewCategoryName(e.target.value)}
+              placeholder="Add category (e.g. Pets)"
+              disabled={taxonomyBusy}
+            />
+            <button
+              type="button"
+              className="btn-main"
+              onClick={handleCreateCategory}
+              disabled={taxonomyBusy || !newCategoryName.trim()}
+            >
+              Add Category
+            </button>
+          </div>
+
+          {taxonomyCategories.length === 0 ? (
+            <p className="hint">No categories configured yet.</p>
+          ) : (
+            <div className="taxonomy-list">
+              {taxonomyCategories.map((category) => (
+                <article key={category.id} className="taxonomy-category">
+                  <div className="taxonomy-category-row">
+                    {editingCategoryId === category.id ? (
+                      <div className="taxonomy-inline-edit">
+                        <input
+                          value={editingCategoryName}
+                          onChange={(e) => setEditingCategoryName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void saveCategoryRename(category);
+                            }
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              cancelCategoryRename();
+                            }
+                          }}
+                          disabled={taxonomyBusy}
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          className="btn-main"
+                          onClick={() => void saveCategoryRename(category)}
+                          disabled={taxonomyBusy || !editingCategoryName.trim()}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={cancelCategoryRename}
+                          disabled={taxonomyBusy}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <strong>{category.name}</strong>
+                        <div className="member-actions">
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            onClick={() => startCategoryRename(category)}
+                            disabled={taxonomyBusy}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-danger"
+                            onClick={() => setDeactivateTarget({ type: "category", category })}
+                            disabled={taxonomyBusy}
+                          >
+                            Deactivate
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="taxonomy-sub-list">
+                    {category.subcategories.length === 0 ? (
+                      <small>No subcategories.</small>
+                    ) : (
+                      category.subcategories.map((subcategory) => (
+                        <div key={subcategory.id} className="taxonomy-sub-row">
+                          {editingSubcategoryId === subcategory.id ? (
+                            <div className="taxonomy-inline-edit">
+                              <input
+                                value={editingSubcategoryName}
+                                onChange={(e) => setEditingSubcategoryName(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    void saveSubcategoryRename(category, subcategory);
+                                  }
+                                  if (e.key === "Escape") {
+                                    e.preventDefault();
+                                    cancelSubcategoryRename();
+                                  }
+                                }}
+                                disabled={taxonomyBusy}
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                className="btn-main"
+                                onClick={() => void saveSubcategoryRename(category, subcategory)}
+                                disabled={taxonomyBusy || !editingSubcategoryName.trim()}
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-ghost"
+                                onClick={cancelSubcategoryRename}
+                                disabled={taxonomyBusy}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <span>{subcategory.name}</span>
+                              <div className="member-actions">
+                                <button
+                                  type="button"
+                                  className="btn-ghost"
+                                  onClick={() => startSubcategoryRename(category, subcategory)}
+                                  disabled={taxonomyBusy}
+                                >
+                                  Rename
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-danger"
+                                  onClick={() =>
+                                    setDeactivateTarget({ type: "subcategory", category, subcategory })
+                                  }
+                                  disabled={taxonomyBusy}
+                                >
+                                  Deactivate
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="taxonomy-create-row">
+                    <input
+                      value={newSubcategoryByCategory[category.id] || ""}
+                      onChange={(e) => updateSubcategoryInput(category.id, e.target.value)}
+                      placeholder={`Add subcategory for ${category.name}`}
+                      disabled={taxonomyBusy}
+                    />
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      onClick={() => handleCreateSubcategory(category)}
+                      disabled={taxonomyBusy || !String(newSubcategoryByCategory[category.id] || "").trim()}
+                    >
+                      Add Subcategory
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </article>
+      )}
+
+      <ConfirmModal
+        open={Boolean(deactivateTarget)}
+        title={
+          deactivateTarget?.type === "category"
+            ? "Deactivate this category?"
+            : "Deactivate this subcategory?"
+        }
+        description={
+          deactivateTarget?.type === "category"
+            ? `Deactivate "${deactivateTarget.category.name}" and all its subcategories?`
+            : deactivateTarget
+              ? `Deactivate "${deactivateTarget.subcategory.name}" under "${deactivateTarget.category.name}"?`
+              : ""
+        }
+        confirmLabel="Deactivate"
+        busy={taxonomyBusy}
+        onCancel={() => setDeactivateTarget(null)}
+        onConfirm={handleConfirmDeactivate}
+      />
+    </section>
+  );
+}
+
+function DashboardPanel({ token, embedded = false }) {
   const [monthsBack, setMonthsBack] = useState(6);
   const [dashboard, setDashboard] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -875,9 +1946,9 @@ function DashboardPanel({ token }) {
   }, [dashboard]);
 
   return (
-    <section className="panel">
+    <section className={embedded ? "embedded-panel" : "panel"}>
       <div className="dashboard-header">
-        <h2>Household Dashboard</h2>
+        {embedded ? <h3>Spending Overview</h3> : <h2>Spending Overview</h2>}
         <label>
           Trend Window
           <select
@@ -891,7 +1962,7 @@ function DashboardPanel({ token }) {
         </label>
       </div>
 
-      {loading && <p>Loading dashboard...</p>}
+      {loading && <PanelSkeleton rows={5} />}
       {error && <p className="form-error">{error}</p>}
 
       {dashboard && !loading && (
@@ -900,7 +1971,7 @@ function DashboardPanel({ token }) {
             <article className="stat-card">
               <p className="kicker">Current Month</p>
               <h3>{dashboard.period_month}</h3>
-              <p className="metric-value">{dashboard.total_spend.toFixed(2)}</p>
+              <p className="metric-value">{formatCurrencyValue(dashboard.total_spend)}</p>
               <small>
                 {dashboard.period_start} to {dashboard.period_end}
               </small>
@@ -935,7 +2006,7 @@ function DashboardPanel({ token }) {
                           }}
                         />
                       </div>
-                      <strong>{item.total.toFixed(2)}</strong>
+                      <strong>{formatCurrencyValue(item.total)}</strong>
                     </div>
                   ))}
                 </div>
@@ -959,7 +2030,7 @@ function DashboardPanel({ token }) {
                           }}
                         />
                       </div>
-                      <strong>{item.total.toFixed(2)}</strong>
+                      <strong>{formatCurrencyValue(item.total)}</strong>
                     </div>
                   ))}
                 </div>
@@ -983,7 +2054,7 @@ function DashboardPanel({ token }) {
                           }}
                         />
                       </div>
-                      <strong>{item.total.toFixed(2)}</strong>
+                      <strong>{formatCurrencyValue(item.total)}</strong>
                     </div>
                   ))}
                 </div>
@@ -1004,33 +2075,127 @@ const analyticsPrompts = [
   "Show top 5 expenses in last 3 months",
 ];
 
-function formatCell(value) {
+function isInternalIdColumn(column) {
+  return /_id$/i.test(column || "") || /^id$/i.test(column || "");
+}
+
+function toColumnLabel(column) {
+  return String(column || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function parseNumeric(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatCurrencyValue(value, currencyCode = "INR") {
+  const numeric = parseNumeric(value);
+  if (numeric === null) return value;
+  const normalized = String(currencyCode || "INR").toUpperCase();
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: normalized,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(numeric);
+  } catch {
+    return `${numeric.toFixed(2)} ${normalized}`;
+  }
+}
+
+function formatDateValue(value) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function getRowCurrency(row, columns) {
+  const currencyIndex = columns.findIndex((column) => String(column).toLowerCase() === "currency");
+  if (currencyIndex < 0) return "INR";
+  const raw = row?.[currencyIndex];
+  if (typeof raw !== "string") return "INR";
+  const code = raw.trim().toUpperCase();
+  return code || "INR";
+}
+
+function isAmountColumn(column) {
+  return /(amount|total|spend|value|sum)/i.test(column || "");
+}
+
+function isDateColumn(column) {
+  return /(date|day|month|year)/i.test(column || "");
+}
+
+function formatCell(value, column, row, columns) {
+  const columnName = String(column || "");
+  if (isDateColumn(columnName)) {
+    return formatDateValue(value);
+  }
+  if (isAmountColumn(columnName)) {
+    return formatCurrencyValue(value, getRowCurrency(row, columns));
+  }
   if (typeof value === "number") {
     return Number.isInteger(value) ? value : value.toFixed(2);
   }
   return value;
 }
 
-function AnalyticsPanel({ token }) {
+function AnalyticsPanel({ token, embedded = false }) {
   const [text, setText] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [showDebug, setShowDebug] = useState(false);
 
   const maxPointValue = useMemo(() => {
     if (!result?.chart?.points?.length) return 1;
     return Math.max(...result.chart.points.map((point) => point.value), 1);
   }, [result]);
 
+  const visibleTable = useMemo(() => {
+    if (!result?.table) return null;
+    const columns = Array.isArray(result.table.columns) ? result.table.columns : [];
+    const rows = Array.isArray(result.table.rows) ? result.table.rows : [];
+    const visibleIndexes = columns
+      .map((column, index) => ({ column, index }))
+      .filter((item) => !isInternalIdColumn(String(item.column)))
+      .map((item) => item.index);
+    if (visibleIndexes.length === 0) {
+      return { columns: [], rows: [] };
+    }
+    return {
+      columns: visibleIndexes.map((index) => columns[index]),
+      rows: rows.map((row) =>
+        visibleIndexes.map((index) => (Array.isArray(row) ? row[index] : ""))
+      ),
+    };
+  }, [result]);
+
   async function runQuery(customText) {
-    const query = customText ?? text;
-    if (!query.trim()) return;
+    const query = String(customText ?? text).trim();
+    if (!query) return;
+    setText(query);
     setLoading(true);
     setError("");
+    setShowDebug(false);
     try {
       const data = await askAnalysis(token, query);
       setResult(data);
-      if (!customText) setText("");
+      setText("");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1039,10 +2204,10 @@ function AnalyticsPanel({ token }) {
   }
 
   return (
-    <section className="panel">
-      <h2>Analytics Chat</h2>
+    <section className={embedded ? "embedded-panel" : "panel"}>
+      {embedded ? <h3>Ask AI</h3> : <h2>Ask AI</h2>}
       <p className="hint">
-        Ask household spend questions. Tool routing is automatic and household-safe.
+        Ask household spending questions and get chart/table-backed answers.
       </p>
       <div className="prompt-pills">
         {analyticsPrompts.map((prompt) => (
@@ -1050,7 +2215,7 @@ function AnalyticsPanel({ token }) {
             type="button"
             key={prompt}
             className="btn-ghost prompt-pill"
-            onClick={() => runQuery(prompt)}
+            onClick={() => void runQuery(prompt)}
             disabled={loading}
           >
             {prompt}
@@ -1064,31 +2229,51 @@ function AnalyticsPanel({ token }) {
           onChange={(e) => setText(e.target.value)}
           placeholder="Ask anything about household spending..."
         />
-        <button className="btn-main" onClick={() => runQuery()} disabled={loading}>
-          {loading ? "Analyzing..." : "Ask Analytics"}
+        <button className="btn-main" onClick={() => void runQuery()} disabled={loading}>
+          {loading ? "Analyzing..." : "Run Insight"}
         </button>
       </div>
+      {loading && <p className="hint subtle-loader">Analyzing ledger data...</p>}
       {error && <p className="form-error">{error}</p>}
 
       {result && (
         <div className="analytics-results">
           <article className="result-card">
-            <h3>Assistant</h3>
-            <p className="assistant-bubble">{result.answer}</p>
-            <div className="analysis-meta">
-              <span className={`route-chip ${result.route}`}>{result.route.toUpperCase()}</span>
-              <span className="tool-chip">{result.tool}</span>
-              <span className="hint">Confidence {Number(result.confidence ?? 0).toFixed(2)}</span>
+            <div className="row draft-header">
+              <h3>Assistant</h3>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setShowDebug((prev) => !prev)}
+              >
+                {showDebug ? "Hide technical details" : "Show technical details"}
+              </button>
             </div>
-            {Array.isArray(result.tool_trace) && result.tool_trace.length > 0 && (
-              <p className="hint">
-                Trace: <code>{result.tool_trace.join(" -> ")}</code>
-              </p>
-            )}
-            {result.sql && (
-              <p className="hint">
-                SQL: <code>{result.sql}</code>
-              </p>
+            <article className="assistant-bubble markdown-content">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {result.answer ?? ""}
+              </ReactMarkdown>
+            </article>
+            {showDebug && (
+              <>
+                <div className="analysis-meta">
+                  <span className={`route-chip ${result.route}`}>{result.route.toUpperCase()}</span>
+                  <span className="tool-chip">{result.tool}</span>
+                  <span className="hint">
+                    Confidence {Number(result.confidence ?? 0).toFixed(2)}
+                  </span>
+                </div>
+                {Array.isArray(result.tool_trace) && result.tool_trace.length > 0 && (
+                  <p className="hint">
+                    Trace: <code>{result.tool_trace.join(" -> ")}</code>
+                  </p>
+                )}
+                {result.sql && (
+                  <p className="hint">
+                    SQL: <code>{result.sql}</code>
+                  </p>
+                )}
+              </>
             )}
           </article>
 
@@ -1107,33 +2292,37 @@ function AnalyticsPanel({ token }) {
                         }}
                       />
                     </div>
-                    <strong>{point.value.toFixed(2)}</strong>
+                    <strong>{formatCurrencyValue(point.value)}</strong>
                   </div>
                 ))}
               </div>
             </article>
           )}
 
-          {result.table && (
+          {visibleTable && (
             <article className="result-card">
               <h3>Result Table</h3>
-              {result.table.rows.length === 0 ? (
+              {visibleTable.columns.length === 0 ? (
+                <p>No display-friendly columns returned.</p>
+              ) : visibleTable.rows.length === 0 ? (
                 <p>No rows returned.</p>
               ) : (
                 <div className="table-wrap">
                   <table className="analytics-table">
                     <thead>
                       <tr>
-                        {result.table.columns.map((column) => (
-                          <th key={column}>{column}</th>
+                        {visibleTable.columns.map((column) => (
+                          <th key={column}>{toColumnLabel(column)}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {result.table.rows.map((row, index) => (
+                      {visibleTable.rows.map((row, index) => (
                         <tr key={index}>
                           {row.map((cell, cellIndex) => (
-                            <td key={`${index}-${cellIndex}`}>{formatCell(cell)}</td>
+                            <td key={`${index}-${cellIndex}`}>
+                              {formatCell(cell, visibleTable.columns[cellIndex], row, visibleTable.columns)}
+                            </td>
                           ))}
                         </tr>
                       ))}
@@ -1149,6 +2338,40 @@ function AnalyticsPanel({ token }) {
   );
 }
 
+function InsightsPanel({ token }) {
+  const [activeView, setActiveView] = useState("overview");
+
+  return (
+    <section className="panel">
+      <div className="dashboard-header">
+        <h2>Insights</h2>
+        <div className="insights-switch" role="tablist" aria-label="Insights Sections">
+          <button
+            type="button"
+            className={activeView === "overview" ? "insights-tab active" : "insights-tab"}
+            onClick={() => setActiveView("overview")}
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            className={activeView === "ai" ? "insights-tab active" : "insights-tab"}
+            onClick={() => setActiveView("ai")}
+          >
+            Ask AI
+          </button>
+        </div>
+      </div>
+
+      {activeView === "overview" ? (
+        <DashboardPanel token={token} embedded />
+      ) : (
+        <AnalyticsPanel token={token} embedded />
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [auth, setAuth] = useState(() => {
     const token = localStorage.getItem("expense_auth_token");
@@ -1158,7 +2381,12 @@ export default function App() {
       user: userRaw ? JSON.parse(userRaw) : null,
     };
   });
-  const [activeTab, setActiveTab] = useState("log");
+  const [activeTab, setActiveTab] = useState("capture");
+  const [sessionTransitionVisible, setSessionTransitionVisible] = useState(false);
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickAddSource, setQuickAddSource] = useState("header");
+  const [capturePrefillText, setCapturePrefillText] = useState("");
+  const [globalNotice, setGlobalNotice] = useState("");
 
   useEffect(() => {
     if (auth?.token) {
@@ -1173,8 +2401,41 @@ export default function App() {
     }
   }, [auth]);
 
+  useEffect(() => {
+    if (!auth?.token) {
+      setSessionTransitionVisible(false);
+      return;
+    }
+    setSessionTransitionVisible(true);
+    const timer = setTimeout(() => {
+      setSessionTransitionVisible(false);
+    }, 650);
+    return () => clearTimeout(timer);
+  }, [auth?.token]);
+
+  useEffect(() => {
+    if (!auth?.token) return;
+    function onKeyDown(event) {
+      if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === "k") {
+        event.preventDefault();
+        setQuickAddSource("shortcut");
+        setQuickAddOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [auth?.token]);
+
+  useEffect(() => {
+    if (!globalNotice) return;
+    const timer = setTimeout(() => {
+      setGlobalNotice("");
+    }, 2800);
+    return () => clearTimeout(timer);
+  }, [globalNotice]);
+
   const tabLabel = useMemo(
-    () => tabs.find((tab) => tab.id === activeTab)?.label ?? "Chat Log",
+    () => tabs.find((tab) => tab.id === activeTab)?.label ?? "Capture",
     [activeTab]
   );
 
@@ -1187,9 +2448,31 @@ export default function App() {
     );
   }
 
+  if (sessionTransitionVisible) {
+    return (
+      <main className="app-shell">
+        <SessionTransition />
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
-      <Header user={auth.user} onLogout={() => setAuth({ token: null, user: null })} />
+      {globalNotice && <div className="app-notice">{globalNotice}</div>}
+      <Header
+        user={auth.user}
+        onQuickAdd={() => {
+          setQuickAddSource("header");
+          setQuickAddOpen(true);
+        }}
+        onLogout={() => {
+          setAuth({ token: null, user: null });
+          setActiveTab("capture");
+          setQuickAddOpen(false);
+          setCapturePrefillText("");
+          setGlobalNotice("");
+        }}
+      />
       <section className="workspace">
         <aside className="side-tabs">
           <p className="kicker">Workspace</p>
@@ -1208,24 +2491,60 @@ export default function App() {
           <div className="content-header">
             <h1>{tabLabel}</h1>
           </div>
-          {activeTab === "log" && <ExpenseLogPanel token={auth.token} />}
-          {activeTab === "dashboard" && <DashboardPanel token={auth.token} />}
-          {activeTab === "household" && <HouseholdPanel token={auth.token} user={auth.user} />}
-          {activeTab === "analytics" && <AnalyticsPanel token={auth.token} />}
+          {activeTab === "capture" && (
+            <ExpenseLogPanel
+              token={auth.token}
+              prefilledText={capturePrefillText}
+              onPrefilledTextConsumed={() => setCapturePrefillText("")}
+            />
+          )}
+          {activeTab === "ledger" && <LedgerPanel token={auth.token} user={auth.user} />}
+          {activeTab === "insights" && <InsightsPanel token={auth.token} />}
+          {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
+          {activeTab === "settings" && <SettingsPanel token={auth.token} user={auth.user} />}
         </div>
       </section>
+      <button
+        type="button"
+        className="quick-add-fab"
+        onClick={() => {
+          setQuickAddSource("fab");
+          setQuickAddOpen(true);
+        }}
+        aria-label="Quick add expense"
+      >
+        +
+      </button>
+      <QuickAddModal
+        open={quickAddOpen}
+        token={auth.token}
+        source={quickAddSource}
+        onClose={() => setQuickAddOpen(false)}
+        onRouteToCapture={(text) => {
+          setCapturePrefillText(text);
+          setActiveTab("capture");
+          setQuickAddOpen(false);
+        }}
+        onNotify={(text) => setGlobalNotice(text)}
+      />
     </main>
   );
 }
 
-function Header({ user, onLogout }) {
+function Header({ user, onQuickAdd, onLogout }) {
   return (
     <header className="topbar">
       <div>
-        <p className="kicker">Family Ledger</p>
-        <h2>Expense Tracker</h2>
+        <p className="kicker">LedgerLoop</p>
+        <h2>Household Finance Workspace</h2>
       </div>
       <div className="topbar-actions">
+        {user && (
+          <button className="btn-main quick-add-trigger" onClick={onQuickAdd} type="button">
+            Quick Add
+            <span>Ctrl/Cmd+K</span>
+          </button>
+        )}
         {user && <span className="user-chip">{user.full_name} ({user.role})</span>}
         {user && (
           <button className="btn-ghost" onClick={onLogout} type="button">

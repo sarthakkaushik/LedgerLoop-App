@@ -63,12 +63,26 @@ def _infer_currency(text: str, default_currency: str) -> str:
     return default_currency
 
 
-def _infer_category(text: str) -> str:
+def _infer_category(text: str, context: ParseContext) -> str:
     low = text.lower()
+    for category in context.household_categories:
+        normalized = category.strip().lower()
+        if normalized and normalized in low:
+            return category
     for key, value in CATEGORY_KEYWORDS.items():
         if key in low:
             return value
     return "Other"
+
+
+def _infer_subcategory(text: str, category: str, context: ParseContext) -> str | None:
+    subcategories = context.household_taxonomy.get(category, [])
+    low = text.lower()
+    for subcategory in subcategories:
+        normalized = subcategory.strip().lower()
+        if normalized and normalized in low:
+            return subcategory
+    return None
 
 
 def _extract_date(text: str, context: ParseContext) -> str:
@@ -103,13 +117,15 @@ class MockExpenseParserProvider(ExpenseParserProvider):
             if not amount_match:
                 continue
             amount = float(amount_match.group(1))
-            category = _infer_category(clause)
+            category = _infer_category(clause, context)
+            subcategory = _infer_subcategory(clause, category, context)
             description = _description_from_clause(clause)
             drafts.append(
                 ParsedExpense(
                     amount=amount,
                     currency=currency,
                     category=category,
+                    subcategory=subcategory,
                     description=description,
                     merchant_or_item=description,
                     date_incurred=_extract_date(clause, context),

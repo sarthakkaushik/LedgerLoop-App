@@ -58,6 +58,56 @@ export async function fetchHousehold(token) {
   return apiRequest("/auth/household", { token });
 }
 
+export async function fetchTaxonomy(token) {
+  return apiRequest("/settings/taxonomy", { token });
+}
+
+export async function createTaxonomyCategory(token, payload) {
+  return apiRequest("/settings/taxonomy/categories", {
+    method: "POST",
+    token,
+    body: payload,
+  });
+}
+
+export async function updateTaxonomyCategory(token, categoryId, payload) {
+  return apiRequest(`/settings/taxonomy/categories/${categoryId}`, {
+    method: "PATCH",
+    token,
+    body: payload,
+  });
+}
+
+export async function deleteTaxonomyCategory(token, categoryId) {
+  return apiRequest(`/settings/taxonomy/categories/${categoryId}`, {
+    method: "DELETE",
+    token,
+  });
+}
+
+export async function createTaxonomySubcategory(token, categoryId, payload) {
+  return apiRequest(`/settings/taxonomy/categories/${categoryId}/subcategories`, {
+    method: "POST",
+    token,
+    body: payload,
+  });
+}
+
+export async function updateTaxonomySubcategory(token, subcategoryId, payload) {
+  return apiRequest(`/settings/taxonomy/subcategories/${subcategoryId}`, {
+    method: "PATCH",
+    token,
+    body: payload,
+  });
+}
+
+export async function deleteTaxonomySubcategory(token, subcategoryId) {
+  return apiRequest(`/settings/taxonomy/subcategories/${subcategoryId}`, {
+    method: "DELETE",
+    token,
+  });
+}
+
 export async function deleteHouseholdMember(token, memberId) {
   return apiRequest(`/auth/members/${memberId}`, { method: "DELETE", token });
 }

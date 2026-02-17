@@ -7,6 +7,11 @@ class AnalysisAskRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
 
 
+class AnalysisAskE2EPostgresRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    postgres_url: str = Field(min_length=1, max_length=4000)
+
+
 class AnalysisPoint(BaseModel):
     label: str
     value: float

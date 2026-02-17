@@ -21,6 +21,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
         await conn.run_sync(_ensure_user_is_active_column)
+        await conn.run_sync(_ensure_expense_subcategory_column)
 
 
 def _ensure_user_is_active_column(sync_conn) -> None:
@@ -42,3 +43,16 @@ def _ensure_user_is_active_column(sync_conn) -> None:
         sync_conn.exec_driver_sql(
             "ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"
         )
+
+
+def _ensure_expense_subcategory_column(sync_conn) -> None:
+    inspector = inspect(sync_conn)
+    table_names = set(inspector.get_table_names())
+    if "expenses" not in table_names:
+        return
+
+    column_names = {column["name"] for column in inspector.get_columns("expenses")}
+    if "subcategory" in column_names:
+        return
+
+    sync_conn.exec_driver_sql("ALTER TABLE expenses ADD COLUMN subcategory VARCHAR(80)")

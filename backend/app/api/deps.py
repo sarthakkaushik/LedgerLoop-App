@@ -1,5 +1,6 @@
-from datetime import UTC, datetime
+from datetime import date, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.core.db import get_session
+from app.models.expense import Expense
 from app.core.security import decode_access_token
 from app.models.user import User, UserRole
 from app.services.llm.base import ExpenseParserProvider
@@ -14,9 +16,17 @@ from app.services.llm.provider_factory import get_expense_parser_provider
 from app.services.llm.settings_service import (
     get_env_runtime_config,
 )
+from app.services.taxonomy_service import build_household_taxonomy_map
 from app.services.llm.types import ParseContext
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+
+
+def _today_for_timezone(timezone_name: str) -> date:
+    try:
+        return datetime.now(ZoneInfo(timezone_name)).date()
+    except Exception:
+        return date.today()
 
 
 async def get_current_user(
@@ -58,11 +68,52 @@ async def get_expense_parser(
 
 async def get_llm_parse_context(
     user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
 ) -> ParseContext:
-    _ = user
     runtime = get_env_runtime_config()
+    categories, taxonomy = await build_household_taxonomy_map(
+        session,
+        household_id=user.household_id,
+    )
+
+    if not categories:
+        cat_result = await session.execute(
+            select(Expense.category).where(
+                Expense.household_id == user.household_id,
+                Expense.category.is_not(None),
+            )
+        )
+        categories = sorted(
+            {
+                str(value).strip()
+                for value in cat_result.scalars().all()
+                if value and str(value).strip()
+            }
+        )[:30]
+        if "Other" not in categories:
+            categories.append("Other")
+        taxonomy = {category: [] for category in categories}
+
+    member_result = await session.execute(
+        select(User.full_name).where(
+            User.household_id == user.household_id,
+            User.is_active == True,  # noqa: E712
+        )
+    )
+
+    members = sorted(
+        {
+            str(value).strip()
+            for value in member_result.scalars().all()
+            if value and str(value).strip()
+        }
+    )[:30]
+
     return ParseContext(
-        reference_date=datetime.now(UTC).date(),
+        reference_date=_today_for_timezone(runtime.timezone),
         timezone=runtime.timezone,
         default_currency=runtime.default_currency,
+        household_categories=categories[:60],
+        household_taxonomy=taxonomy,
+        household_members=members,
     )

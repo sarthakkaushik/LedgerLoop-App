@@ -27,6 +27,7 @@ class FakeParser(ExpenseParserProvider):
                     amount=800.0,
                     currency="INR",
                     category="Food",
+                    subcategory="Restaurant",
                     description="Dinner",
                     merchant_or_item="Dinner",
                     date_incurred=str(context.reference_date),
@@ -77,6 +78,7 @@ async def test_confirm_expenses_flow_and_idempotency(client: AsyncClient) -> Non
         assert confirm_data["confirmed_count"] == 1
         assert confirm_data["expenses"][0]["amount"] == 750.0
         assert confirm_data["expenses"][0]["category"] == "Dining"
+        assert "warnings" in confirm_data
 
         replay_res = await client.post(
             "/expenses/confirm",
@@ -87,5 +89,47 @@ async def test_confirm_expenses_flow_and_idempotency(client: AsyncClient) -> Non
         replay_data = replay_res.json()
         assert replay_data["idempotent_replay"] is True
         assert replay_data["confirmed_count"] == 1
+    finally:
+        app.dependency_overrides.pop(get_expense_parser, None)
+
+
+@pytest.mark.asyncio
+async def test_confirm_soft_normalizes_unknown_category_and_subcategory(client: AsyncClient) -> None:
+    from app.main import app
+
+    app.dependency_overrides[get_expense_parser] = lambda: FakeParser()
+    token = await register_and_get_token(client, "confirmnormalize@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        log_res = await client.post(
+            "/expenses/log",
+            json={"text": "Paid 800 for dinner"},
+            headers=headers,
+        )
+        assert log_res.status_code == 200
+        draft_id = log_res.json()["expenses"][0]["id"]
+        assert draft_id is not None
+
+        confirm_res = await client.post(
+            "/expenses/confirm",
+            json={
+                "idempotency_key": "confirm-key-normalize-001",
+                "expenses": [
+                    {
+                        "draft_id": draft_id,
+                        "amount": 800.0,
+                        "category": "NonTaxonomyCategory",
+                        "subcategory": "UnknownSubcategory",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        assert confirm_res.status_code == 200
+        payload = confirm_res.json()
+        assert payload["confirmed_count"] == 1
+        assert payload["expenses"][0]["category"] == "Other"
+        assert payload["expenses"][0]["subcategory"] is None
+        assert payload["warnings"]
     finally:
         app.dependency_overrides.pop(get_expense_parser, None)

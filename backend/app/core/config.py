@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
+    cerebras_api_key: str | None = None
+    cerebras_model: str = "gpt-oss-120b"
 
     @property
     def cors_origins(self) -> list[str]:

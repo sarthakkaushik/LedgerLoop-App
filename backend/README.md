@@ -34,7 +34,7 @@ uv run pytest -q
 - `POST /expenses/confirm` (confirm/edit drafts with idempotency key)
 - `GET /expenses/list` (recent expense feed with `logged_by_name`, household-scoped)
 - `GET /expenses/dashboard` (month totals + category/user split + trend)
-- `POST /analysis/ask` (hybrid analytics: fixed intents + schema-aware SQL agent fallback with validation, execution, and trace)
+- `POST /analysis/ask` (fixed intents + schema-aware SQL agent with 3-attempt auto-repair, safe SQL validation, execution trace, and DB logging)
 - `GET /settings/llm`
 - `PUT /settings/llm` (disabled in env-managed mode; returns 409)
 - `POST /settings/llm/test`
@@ -43,3 +43,5 @@ uv run pytest -q
 - Local default: `LLM_PROVIDER=mock` (no external API key required)
 - Production recommendation: configure `LLM_PROVIDER`, model, and provider key in backend `.env`.
 - Runtime now uses server env values directly (no frontend/API key entry required per household).
+- Cerebras mode: set `LLM_PROVIDER=cerebras`, `CEREBRAS_API_KEY`, and `CEREBRAS_MODEL=gpt-oss-120b`.
+- OpenAI mode: set `LLM_PROVIDER=openai` with `OPENAI_API_KEY`; analytics SQL agent uses OpenAI Agents SDK and injects live DB schema into system instructions on each request.
