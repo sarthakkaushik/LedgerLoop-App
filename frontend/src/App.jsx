@@ -1873,32 +1873,89 @@ function LedgerPanel({ token, user }) {
           {!feed?.items?.length ? (
             <p>No expenses in this filter.</p>
           ) : (
-            <div className="table-wrap">
-              <table className="analytics-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Logged By</th>
-                    <th>Category</th>
-                    <th>Subcategory</th>
-                    <th>Description</th>
-                    <th>Amount</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {feed.items.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.date_incurred}</td>
-                      <td>{item.logged_by_name}</td>
-                      <td>{item.category || "Other"}</td>
-                      <td>{item.subcategory || "-"}</td>
-                      <td>{item.description || item.merchant_or_item || "-"}</td>
-                      <td>{formatCurrencyValue(item.amount, item.currency)}</td>
-                      <td>{item.status}</td>
-                      <td>
-                        {(user?.role === "admin" || item.logged_by_user_id === user?.id) && (
+            <>
+              <div className="table-wrap desktop-table-only">
+                <table className="analytics-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Logged By</th>
+                      <th>Category</th>
+                      <th>Subcategory</th>
+                      <th>Description</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {feed.items.map((item) => {
+                      const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                      return (
+                        <tr key={item.id}>
+                          <td>{item.date_incurred}</td>
+                          <td>{item.logged_by_name}</td>
+                          <td>{item.category || "Other"}</td>
+                          <td>{item.subcategory || "-"}</td>
+                          <td>{item.description || item.merchant_or_item || "-"}</td>
+                          <td>{formatCurrencyValue(item.amount, item.currency)}</td>
+                          <td>{item.status}</td>
+                          <td>
+                            {canDelete && (
+                              <button
+                                type="button"
+                                className="btn-danger"
+                                onClick={() => setExpenseToDelete(item)}
+                                disabled={deletingExpenseId === item.id}
+                              >
+                                {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mobile-data-list mobile-cards-only">
+                {feed.items.map((item) => {
+                  const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                  return (
+                    <article className="mobile-data-card" key={`mobile-${item.id}`}>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Date</span>
+                        <strong className="mobile-data-value">{item.date_incurred}</strong>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Logged By</span>
+                        <span className="mobile-data-value">{item.logged_by_name}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Category</span>
+                        <span className="mobile-data-value">{item.category || "Other"}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Subcategory</span>
+                        <span className="mobile-data-value">{item.subcategory || "-"}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Description</span>
+                        <span className="mobile-data-value">{item.description || item.merchant_or_item || "-"}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Amount</span>
+                        <strong className="mobile-data-value">
+                          {formatCurrencyValue(item.amount, item.currency)}
+                        </strong>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Status</span>
+                        <span className="mobile-data-value">{item.status}</span>
+                      </div>
+                      {canDelete && (
+                        <div className="mobile-data-actions">
                           <button
                             type="button"
                             className="btn-danger"
@@ -1907,13 +1964,13 @@ function LedgerPanel({ token, user }) {
                           >
                             {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
                           </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </>
           )}
         </article>
       )}
@@ -2773,28 +2830,46 @@ function AnalyticsPanel({ token, embedded = false }) {
               ) : visibleTable.rows.length === 0 ? (
                 <p>No rows returned.</p>
               ) : (
-                <div className="table-wrap">
-                  <table className="analytics-table">
-                    <thead>
-                      <tr>
-                        {visibleTable.columns.map((column) => (
-                          <th key={column}>{toColumnLabel(column)}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleTable.rows.map((row, index) => (
-                        <tr key={index}>
-                          {row.map((cell, cellIndex) => (
-                            <td key={`${index}-${cellIndex}`}>
-                              {formatCell(cell, visibleTable.columns[cellIndex], row, visibleTable.columns)}
-                            </td>
+                <>
+                  <div className="table-wrap desktop-table-only">
+                    <table className="analytics-table">
+                      <thead>
+                        <tr>
+                          {visibleTable.columns.map((column) => (
+                            <th key={column}>{toColumnLabel(column)}</th>
                           ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {visibleTable.rows.map((row, index) => (
+                          <tr key={index}>
+                            {row.map((cell, cellIndex) => (
+                              <td key={`${index}-${cellIndex}`}>
+                                {formatCell(cell, visibleTable.columns[cellIndex], row, visibleTable.columns)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="mobile-data-list mobile-cards-only">
+                    {visibleTable.rows.map((row, index) => (
+                      <article className="mobile-data-card" key={`analytics-mobile-${index}`}>
+                        <p className="mobile-data-card-title">Row {index + 1}</p>
+                        {visibleTable.columns.map((column, cellIndex) => (
+                          <div className="mobile-data-row" key={`analytics-mobile-${index}-${column}`}>
+                            <span className="mobile-data-label">{toColumnLabel(column)}</span>
+                            <span className="mobile-data-value">
+                              {formatCell(row[cellIndex], column, row, visibleTable.columns)}
+                            </span>
+                          </div>
+                        ))}
+                      </article>
+                    ))}
+                  </div>
+                </>
               )}
             </article>
           )}
