@@ -1006,7 +1006,79 @@ const analyticsPrompts = [
   "Show top 5 expenses in last 3 months",
 ];
 
-function formatCell(value) {
+function isInternalIdColumn(column) {
+  return /_id$/i.test(column || "") || /^id$/i.test(column || "");
+}
+
+function toColumnLabel(column) {
+  return String(column || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function parseNumeric(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatCurrencyValue(value, currencyCode = "INR") {
+  const numeric = parseNumeric(value);
+  if (numeric === null) return value;
+  const normalized = String(currencyCode || "INR").toUpperCase();
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: normalized,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(numeric);
+  } catch {
+    return `${numeric.toFixed(2)} ${normalized}`;
+  }
+}
+
+function formatDateValue(value) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function getRowCurrency(row, columns) {
+  const currencyIndex = columns.findIndex((column) => String(column).toLowerCase() === "currency");
+  if (currencyIndex < 0) return "INR";
+  const raw = row?.[currencyIndex];
+  if (typeof raw !== "string") return "INR";
+  const code = raw.trim().toUpperCase();
+  return code || "INR";
+}
+
+function isAmountColumn(column) {
+  return /(amount|total|spend|value|sum)/i.test(column || "");
+}
+
+function isDateColumn(column) {
+  return /(date|day|month|year)/i.test(column || "");
+}
+
+function formatCell(value, column, row, columns) {
+  const columnName = String(column || "");
+  if (isDateColumn(columnName)) {
+    return formatDateValue(value);
+  }
+  if (isAmountColumn(columnName)) {
+    return formatCurrencyValue(value, getRowCurrency(row, columns));
+  }
   if (typeof value === "number") {
     return Number.isInteger(value) ? value : value.toFixed(2);
   }
@@ -1018,10 +1090,30 @@ function AnalyticsPanel({ token }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [showDebug, setShowDebug] = useState(false);
 
   const maxPointValue = useMemo(() => {
     if (!result?.chart?.points?.length) return 1;
     return Math.max(...result.chart.points.map((point) => point.value), 1);
+  }, [result]);
+
+  const visibleTable = useMemo(() => {
+    if (!result?.table) return null;
+    const columns = Array.isArray(result.table.columns) ? result.table.columns : [];
+    const rows = Array.isArray(result.table.rows) ? result.table.rows : [];
+    const visibleIndexes = columns
+      .map((column, index) => ({ column, index }))
+      .filter((item) => !isInternalIdColumn(String(item.column)))
+      .map((item) => item.index);
+    if (visibleIndexes.length === 0) {
+      return { columns: [], rows: [] };
+    }
+    return {
+      columns: visibleIndexes.map((index) => columns[index]),
+      rows: rows.map((row) =>
+        visibleIndexes.map((index) => (Array.isArray(row) ? row[index] : ""))
+      ),
+    };
   }, [result]);
 
   async function runQuery(customText) {
@@ -1029,6 +1121,7 @@ function AnalyticsPanel({ token }) {
     if (!query.trim()) return;
     setLoading(true);
     setError("");
+    setShowDebug(false);
     try {
       const data = await askAnalysis(token, query);
       setResult(data);
@@ -1075,26 +1168,41 @@ function AnalyticsPanel({ token }) {
       {result && (
         <div className="analytics-results">
           <article className="result-card">
-            <h3>Assistant</h3>
+            <div className="row draft-header">
+              <h3>Assistant</h3>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setShowDebug((prev) => !prev)}
+              >
+                {showDebug ? "Hide technical details" : "Show technical details"}
+              </button>
+            </div>
             <article className="assistant-bubble markdown-content">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {result.answer ?? ""}
               </ReactMarkdown>
             </article>
-            <div className="analysis-meta">
-              <span className={`route-chip ${result.route}`}>{result.route.toUpperCase()}</span>
-              <span className="tool-chip">{result.tool}</span>
-              <span className="hint">Confidence {Number(result.confidence ?? 0).toFixed(2)}</span>
-            </div>
-            {Array.isArray(result.tool_trace) && result.tool_trace.length > 0 && (
-              <p className="hint">
-                Trace: <code>{result.tool_trace.join(" -> ")}</code>
-              </p>
-            )}
-            {result.sql && (
-              <p className="hint">
-                SQL: <code>{result.sql}</code>
-              </p>
+            {showDebug && (
+              <>
+                <div className="analysis-meta">
+                  <span className={`route-chip ${result.route}`}>{result.route.toUpperCase()}</span>
+                  <span className="tool-chip">{result.tool}</span>
+                  <span className="hint">
+                    Confidence {Number(result.confidence ?? 0).toFixed(2)}
+                  </span>
+                </div>
+                {Array.isArray(result.tool_trace) && result.tool_trace.length > 0 && (
+                  <p className="hint">
+                    Trace: <code>{result.tool_trace.join(" -> ")}</code>
+                  </p>
+                )}
+                {result.sql && (
+                  <p className="hint">
+                    SQL: <code>{result.sql}</code>
+                  </p>
+                )}
+              </>
             )}
           </article>
 
@@ -1120,26 +1228,30 @@ function AnalyticsPanel({ token }) {
             </article>
           )}
 
-          {result.table && (
+          {visibleTable && (
             <article className="result-card">
               <h3>Result Table</h3>
-              {result.table.rows.length === 0 ? (
+              {visibleTable.columns.length === 0 ? (
+                <p>No display-friendly columns returned.</p>
+              ) : visibleTable.rows.length === 0 ? (
                 <p>No rows returned.</p>
               ) : (
                 <div className="table-wrap">
                   <table className="analytics-table">
                     <thead>
                       <tr>
-                        {result.table.columns.map((column) => (
-                          <th key={column}>{column}</th>
+                        {visibleTable.columns.map((column) => (
+                          <th key={column}>{toColumnLabel(column)}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {result.table.rows.map((row, index) => (
+                      {visibleTable.rows.map((row, index) => (
                         <tr key={index}>
                           {row.map((cell, cellIndex) => (
-                            <td key={`${index}-${cellIndex}`}>{formatCell(cell)}</td>
+                            <td key={`${index}-${cellIndex}`}>
+                              {formatCell(cell, visibleTable.columns[cellIndex], row, visibleTable.columns)}
+                            </td>
                           ))}
                         </tr>
                       ))}

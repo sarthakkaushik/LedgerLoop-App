@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from httpx import AsyncClient
 
@@ -29,6 +31,18 @@ async def test_analysis_requires_auth(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_analysis_e2e_postgres_requires_auth(client: AsyncClient) -> None:
+    response = await client.post(
+        "/analysis/ask-e2e-postgres",
+        json={
+            "text": "How much this month?",
+            "postgres_url": "postgresql://example",
+        },
+    )
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_analysis_returns_simple_agent_response_shape(client: AsyncClient) -> None:
     token = await register_user(client, "analysis-shape@example.com", "Family Shape")
     response = await client.post(
@@ -43,7 +57,14 @@ async def test_analysis_returns_simple_agent_response_shape(client: AsyncClient)
     assert payload["tool"] == "sql_chat_agent"
     assert isinstance(payload["answer"], str)
     assert payload["chart"] is None
-    assert payload["table"] is None
+    assert payload["table"] is None or (
+        isinstance(payload["table"].get("columns"), list)
+        and isinstance(payload["table"].get("rows"), list)
+    )
+    assert re.search(
+        r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+        payload["answer"].lower(),
+    ) is None
     assert payload["sql"] is None
     assert isinstance(payload["tool_trace"], list)
 
