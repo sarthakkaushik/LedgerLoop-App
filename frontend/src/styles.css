@@ -431,27 +431,89 @@ code {
 
 .voice-controls {
   display: grid;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px dashed #b7d4e3;
-  border-radius: 12px;
-  background: #f1f9fe;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #c6dfee;
+  border-radius: 14px;
+  background: linear-gradient(150deg, #f7fcff 0%, #edf6fc 100%);
 }
 
 .voice-controls-row {
   display: flex;
-  align-items: flex-end;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
-.voice-action {
-  min-width: 140px;
+.voice-icon-button {
+  min-width: 138px;
+  height: 48px;
+  border: 1px solid #9ac4d8;
+  border-radius: 999px;
+  padding: 0 16px 0 12px;
+  background: #ffffff;
+  color: #1b4f6c;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.voice-icon-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: #7daec6;
+  box-shadow: 0 8px 16px rgba(21, 86, 117, 0.14);
+}
+
+.voice-icon-button:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.voice-icon-button.recording {
+  border-color: #d5a6a6;
+  background: #fff3f3;
+  color: #7d3535;
+}
+
+.voice-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(140deg, #0f8fa9, #0a6e84);
+  color: #f5fdff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.voice-icon-button.recording .voice-icon {
+  background: linear-gradient(140deg, #d67575, #ba5050);
+}
+
+.voice-icon svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.voice-action-text {
+  letter-spacing: 0.01em;
 }
 
 .voice-language-group {
   display: grid;
   gap: 5px;
+  margin: 0;
+  min-width: 180px;
 }
 
 .voice-language-group span {
@@ -463,17 +525,36 @@ code {
 }
 
 .voice-language-group select {
-  min-width: 160px;
+  min-width: 180px;
+}
+
+.voice-status-pill {
+  margin: 0;
+  width: fit-content;
+  border: 1px solid #b7d4e3;
+  border-radius: 999px;
+  padding: 6px 11px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #2b5e7d;
+  background: #f1f9fe;
+}
+
+.voice-status-pill.recording {
+  border-color: #e2bbbb;
+  background: #fff5f5;
+  color: #7d3737;
+}
+
+.voice-status-pill.transcribing {
+  border-color: #a8ccde;
+  background: #eaf5fb;
+  color: #1f5f7f;
 }
 
 .voice-status {
   margin: 0;
   font-size: 13px;
-}
-
-.voice-status.recording {
-  color: #7a3232;
-  font-weight: 700;
 }
 
 label {
@@ -1316,9 +1397,14 @@ input[type="checkbox"] {
     align-items: stretch;
   }
 
-  .voice-action,
+  .voice-icon-button,
+  .voice-status-pill,
   .voice-language-group select {
     width: 100%;
+  }
+
+  .voice-status-pill {
+    text-align: center;
   }
 
   .quick-add-actions .btn-main,

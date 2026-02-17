@@ -110,7 +110,6 @@ function normalizeTaxonomyName(value) {
 }
 
 const VOICE_LANGUAGE_OPTIONS = [
-  { value: "auto", label: "Auto-detect" },
   { value: "en", label: "English" },
   { value: "hi", label: "Hindi" },
   { value: "es", label: "Spanish" },
@@ -192,7 +191,7 @@ function resolveVoiceErrorMessage(error) {
 function useVoiceTranscription({ token, onTranscript }) {
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
-  const [language, setLanguage] = useState("auto");
+  const [language, setLanguage] = useState("en");
   const [supported, setSupported] = useState(false);
   const [supportChecked, setSupportChecked] = useState(false);
   const recorderRef = useRef(null);
@@ -222,6 +221,31 @@ function useVoiceTranscription({ token, onTranscript }) {
     streamRef.current = null;
   }
 
+  function clearError() {
+    setError("");
+  }
+
+  function cancelRecording() {
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    chunksRef.current = [];
+    try {
+      if (recorder && recorder.state !== "inactive") {
+        recorder.ondataavailable = null;
+        recorder.onerror = null;
+        recorder.onstop = null;
+        recorder.stop();
+      }
+    } catch {
+      // no-op: best-effort stop
+    }
+    cleanupStream();
+    if (mountedRef.current) {
+      setStatus("idle");
+      setError("");
+    }
+  }
+
   useEffect(() => {
     return () => {
       mountedRef.current = false;
@@ -245,7 +269,7 @@ function useVoiceTranscription({ token, onTranscript }) {
     }
     setSupported(true);
     if (status !== "idle") return;
-    setError("");
+    clearError();
     try {
       const browserNavigator = window.navigator;
       const stream = await browserNavigator.mediaDevices.getUserMedia({ audio: true });
@@ -276,7 +300,7 @@ function useVoiceTranscription({ token, onTranscript }) {
       return;
     }
     setStatus("transcribing");
-    setError("");
+    clearError();
     try {
       const stopPromise = new Promise((resolve) => {
         recorder.addEventListener("stop", resolve, { once: true });
@@ -299,7 +323,7 @@ function useVoiceTranscription({ token, onTranscript }) {
       const formData = new FormData();
       formData.append("audio_file", audioBlob, `voice-note.${extension}`);
       const normalizedLanguage = String(language || "").trim().toLowerCase();
-      if (normalizedLanguage && normalizedLanguage !== "auto") {
+      if (normalizedLanguage) {
         formData.append("language", normalizedLanguage);
       }
 
@@ -333,6 +357,8 @@ function useVoiceTranscription({ token, onTranscript }) {
     setLanguage,
     startRecording,
     stopRecording,
+    cancelRecording,
+    clearError,
   };
 }
 
@@ -340,13 +366,18 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
   const isRecording = voice.status === "recording";
   const isTranscribing = voice.status === "transcribing";
   const controlsDisabled = disabled || isTranscribing;
+  const statusText = isRecording
+    ? "Recording now. Tap stop when done."
+    : isTranscribing
+      ? "Transcribing voice note..."
+      : "Voice ready";
 
   return (
     <div className="voice-controls">
       <div className="voice-controls-row">
         <button
           type="button"
-          className={isRecording ? "btn-danger voice-action" : "btn-ghost voice-action"}
+          className={isRecording ? "voice-icon-button recording" : "voice-icon-button"}
           onClick={() => {
             if (isRecording) {
               void voice.stopRecording();
@@ -356,10 +387,23 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
           }}
           disabled={controlsDisabled || !voice.supportChecked || !voice.supported}
           aria-label={isRecording ? "Stop recording" : "Start voice input"}
+          aria-pressed={isRecording}
         >
-          {isRecording ? "Stop Recording" : "Use Voice"}
+          <span className="voice-icon" aria-hidden="true">
+            {isRecording ? (
+              <svg viewBox="0 0 24 24" focusable="false">
+                <rect x="7" y="7" width="10" height="10" rx="2" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
+                <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
+              </svg>
+            )}
+          </span>
+          <span className="voice-action-text">{isRecording ? "Stop" : "Record"}</span>
         </button>
-        <div className="voice-language-group">
+        <label className="voice-language-group">
           <span>Language</span>
           <select
             value={voice.language}
@@ -374,7 +418,14 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
               </option>
             ))}
           </select>
-        </div>
+        </label>
+        <p
+          className={`voice-status-pill${isRecording ? " recording" : isTranscribing ? " transcribing" : ""}`}
+          role="status"
+          aria-live="polite"
+        >
+          {statusText}
+        </p>
       </div>
 
       {voice.supportChecked && !voice.supported && (
@@ -382,8 +433,6 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
           Voice input is unavailable in this browser. You can continue by typing.
         </p>
       )}
-      {isRecording && <p className="hint voice-status recording">Recording... tap stop when done.</p>}
-      {isTranscribing && <p className="hint voice-status">Transcribing voice note...</p>}
       {voice.error && <p className="form-error">{voice.error}</p>}
     </div>
   );
@@ -519,6 +568,15 @@ function QuickAddModal({
     () => taxonomyCategories.map((category) => category.name),
     [taxonomyCategories]
   );
+  const quickAddVoice = useVoiceTranscription({
+    token,
+    onTranscript: (transcript) => {
+      setText((previous) => appendVoiceTranscript(previous, transcript));
+      setError("");
+    },
+  });
+  const quickAddVoiceTranscribing = quickAddVoice.status === "transcribing";
+  const quickAddVoiceRecording = quickAddVoice.status === "recording";
 
   function getSubcategoryOptions(categoryName) {
     const normalized = normalizeTaxonomyName(categoryName);
@@ -566,9 +624,11 @@ function QuickAddModal({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, loading, confirming, text, drafts, result]);
+  }, [open, loading, confirming, quickAddVoiceTranscribing, quickAddVoiceRecording, text, drafts, result]);
 
   function resetModalState() {
+    quickAddVoice.cancelRecording();
+    quickAddVoice.clearError();
     setText("");
     setResult(null);
     setDrafts([]);
@@ -682,7 +742,10 @@ function QuickAddModal({
   }
 
   async function handleAttemptClose() {
-    if (loading || confirming) return;
+    if (loading || confirming || quickAddVoiceTranscribing) return;
+    if (quickAddVoiceRecording) {
+      quickAddVoice.cancelRecording();
+    }
     const hasUnsavedWork = Boolean(text.trim() || drafts.length > 0 || result);
     if (hasUnsavedWork) {
       setDiscardConfirmOpen(true);
@@ -719,7 +782,12 @@ function QuickAddModal({
             </div>
             <div className="member-actions">
               <span className="tool-chip">{resolveSourceLabel(source)}</span>
-              <button type="button" className="btn-ghost" onClick={() => void handleAttemptClose()}>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => void handleAttemptClose()}
+                disabled={loading || confirming || quickAddVoiceTranscribing}
+              >
                 Close
               </button>
             </div>
@@ -736,12 +804,21 @@ function QuickAddModal({
               placeholder={`Example: Paid ${RUPEE_SYMBOL}1200 for electricity yesterday and ${RUPEE_SYMBOL}300 for groceries`}
               autoFocus
             />
+            <VoiceTranscriptionControls voice={quickAddVoice} disabled={loading || confirming} />
             <div className="quick-add-actions">
-              <button className="btn-main" onClick={handleParse} disabled={loading || confirming}>
+              <button
+                className="btn-main"
+                onClick={handleParse}
+                disabled={loading || confirming || quickAddVoiceTranscribing}
+              >
                 {loading ? "Reading..." : "Create Drafts"}
               </button>
               {result?.needs_clarification && (
-                <button className="btn-ghost" onClick={handleSendToCapture} disabled={loading || confirming}>
+                <button
+                  className="btn-ghost"
+                  onClick={handleSendToCapture}
+                  disabled={loading || confirming || quickAddVoiceTranscribing}
+                >
                   Send to Capture Review
                 </button>
               )}
@@ -774,13 +851,13 @@ function QuickAddModal({
             <article className="result-card">
               <div className="row draft-header">
                 <h4>Review Drafts</h4>
-                <button
-                  className="btn-main"
-                  onClick={handleSaveToLedger}
-                  disabled={loading || confirming}
-                >
-                  {confirming ? "Saving..." : "Save to Ledger"}
-                </button>
+                  <button
+                    className="btn-main"
+                    onClick={handleSaveToLedger}
+                    disabled={loading || confirming || quickAddVoiceTranscribing}
+                  >
+                    {confirming ? "Saving..." : "Save to Ledger"}
+                  </button>
               </div>
               <div className="quick-add-drafts">
                 {drafts.map((draft, index) => (
