@@ -120,6 +120,17 @@ export async function parseExpenseText(token, text) {
   });
 }
 
+export async function transcribeExpenseAudio(token, formData) {
+  const headers = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${getApiBaseUrl()}/expenses/transcribe-audio`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+  return parseResponse(res);
+}
+
 export async function confirmExpenses(token, payload) {
   return apiRequest("/expenses/confirm", {
     method: "POST",

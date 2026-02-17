@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -21,6 +21,7 @@ import {
   loginUser,
   parseExpenseText,
   registerUser,
+  transcribeExpenseAudio,
   updateTaxonomyCategory,
   updateTaxonomySubcategory,
 } from "./api";
@@ -71,6 +72,258 @@ function normalizeTaxonomyName(value) {
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
+}
+
+const VOICE_LANGUAGE_OPTIONS = [
+  { value: "auto", label: "Auto-detect" },
+  { value: "en", label: "English" },
+  { value: "hi", label: "Hindi" },
+  { value: "es", label: "Spanish" },
+];
+
+const RECORDER_MIME_TYPES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4",
+  "audio/ogg;codecs=opus",
+];
+
+const MIME_EXTENSION_MAP = {
+  "audio/webm": "webm",
+  "audio/mp4": "mp4",
+  "audio/ogg": "ogg",
+  "audio/wav": "wav",
+  "audio/mpeg": "mp3",
+};
+
+function appendVoiceTranscript(existingText, transcript) {
+  const current = String(existingText || "");
+  const next = String(transcript || "").trim();
+  if (!next) return current;
+  const trimmedCurrent = current.trimEnd();
+  if (!trimmedCurrent) return next;
+  return `${trimmedCurrent}\n${next}`;
+}
+
+function isVoiceInputSupported() {
+  if (typeof window === "undefined") return false;
+  if (typeof navigator === "undefined") return false;
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+    return false;
+  }
+  return typeof window.MediaRecorder !== "undefined";
+}
+
+function pickRecorderMimeType() {
+  if (typeof window === "undefined" || typeof window.MediaRecorder === "undefined") {
+    return "";
+  }
+  if (typeof window.MediaRecorder.isTypeSupported !== "function") {
+    return "";
+  }
+  return RECORDER_MIME_TYPES.find((mimeType) => window.MediaRecorder.isTypeSupported(mimeType)) || "";
+}
+
+function extensionFromMimeType(mimeType) {
+  const normalized = String(mimeType || "").split(";")[0].trim().toLowerCase();
+  return MIME_EXTENSION_MAP[normalized] || "webm";
+}
+
+function resolveVoiceErrorMessage(error) {
+  if (!error) return "Voice capture failed. Please try again.";
+  const name = String(error?.name || "");
+  if (name === "NotAllowedError") {
+    return "Microphone permission was denied. Allow microphone access and try again.";
+  }
+  if (name === "NotFoundError") {
+    return "No microphone was found on this device.";
+  }
+  const message = String(error?.message || "").trim();
+  return message || "Voice capture failed. Please try again.";
+}
+
+function useVoiceTranscription({ token, onTranscript }) {
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState("");
+  const [language, setLanguage] = useState("auto");
+  const recorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const onTranscriptRef = useRef(onTranscript);
+  const mountedRef = useRef(true);
+
+  const supported = useMemo(() => isVoiceInputSupported(), []);
+
+  useEffect(() => {
+    onTranscriptRef.current = onTranscript;
+  }, [onTranscript]);
+
+  function cleanupStream() {
+    const stream = streamRef.current;
+    if (!stream) return;
+    stream.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      try {
+        const recorder = recorderRef.current;
+        if (recorder && recorder.state !== "inactive") {
+          recorder.stop();
+        }
+      } catch {
+        // no-op: best-effort cleanup
+      }
+      cleanupStream();
+    };
+  }, []);
+
+  async function startRecording() {
+    if (!supported) {
+      setError("Voice input is not supported in this browser.");
+      return;
+    }
+    if (status !== "idle") return;
+    setError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const mimeType = pickRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+      recorderRef.current = recorder;
+      recorder.start();
+      setStatus("recording");
+    } catch (err) {
+      cleanupStream();
+      setStatus("idle");
+      setError(resolveVoiceErrorMessage(err));
+    }
+  }
+
+  async function stopRecording() {
+    if (status !== "recording") return;
+    const recorder = recorderRef.current;
+    if (!recorder) {
+      setStatus("idle");
+      return;
+    }
+    setStatus("transcribing");
+    setError("");
+    try {
+      const stopPromise = new Promise((resolve) => {
+        recorder.addEventListener("stop", resolve, { once: true });
+      });
+      recorder.stop();
+      await stopPromise;
+
+      const chunks = chunksRef.current;
+      chunksRef.current = [];
+      recorderRef.current = null;
+      cleanupStream();
+
+      const guessedMimeType = String(recorder.mimeType || chunks[0]?.type || "audio/webm");
+      const audioBlob = new Blob(chunks, { type: guessedMimeType });
+      if (audioBlob.size === 0) {
+        throw new Error("No voice note was captured. Please record again.");
+      }
+
+      const extension = extensionFromMimeType(audioBlob.type);
+      const formData = new FormData();
+      formData.append("audio_file", audioBlob, `voice-note.${extension}`);
+      const normalizedLanguage = String(language || "").trim().toLowerCase();
+      if (normalizedLanguage && normalizedLanguage !== "auto") {
+        formData.append("language", normalizedLanguage);
+      }
+
+      const response = await transcribeExpenseAudio(token, formData);
+      const transcript = String(response?.text || "").trim();
+      if (!transcript) {
+        throw new Error("No speech transcript was detected. Try speaking a little louder.");
+      }
+      if (typeof onTranscriptRef.current === "function") {
+        onTranscriptRef.current(transcript);
+      }
+      if (mountedRef.current) {
+        setStatus("idle");
+      }
+    } catch (err) {
+      cleanupStream();
+      recorderRef.current = null;
+      if (mountedRef.current) {
+        setStatus("idle");
+        setError(resolveVoiceErrorMessage(err));
+      }
+    }
+  }
+
+  return {
+    supported,
+    status,
+    error,
+    language,
+    setLanguage,
+    startRecording,
+    stopRecording,
+  };
+}
+
+function VoiceTranscriptionControls({ voice, disabled = false }) {
+  const isRecording = voice.status === "recording";
+  const isTranscribing = voice.status === "transcribing";
+  const controlsDisabled = disabled || isTranscribing;
+
+  return (
+    <div className="voice-controls">
+      <div className="voice-controls-row">
+        <button
+          type="button"
+          className={isRecording ? "btn-danger voice-action" : "btn-ghost voice-action"}
+          onClick={() => {
+            if (isRecording) {
+              void voice.stopRecording();
+            } else {
+              void voice.startRecording();
+            }
+          }}
+          disabled={controlsDisabled || !voice.supported}
+          aria-label={isRecording ? "Stop recording" : "Start voice input"}
+        >
+          {isRecording ? "Stop Recording" : "Use Voice"}
+        </button>
+        <div className="voice-language-group">
+          <span>Language</span>
+          <select
+            value={voice.language}
+            onChange={(event) => voice.setLanguage(event.target.value)}
+            disabled={disabled || isRecording || isTranscribing || !voice.supported}
+          >
+            {VOICE_LANGUAGE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {!voice.supported && (
+        <p className="hint voice-status">
+          Voice input is unavailable in this browser. You can continue by typing.
+        </p>
+      )}
+      {isRecording && <p className="hint voice-status recording">Recording... tap stop when done.</p>}
+      {isTranscribing && <p className="hint voice-status">Transcribing voice note...</p>}
+      {voice.error && <p className="form-error">{voice.error}</p>}
+    </div>
+  );
 }
 
 function ConfirmModal({
@@ -152,6 +405,14 @@ function QuickAddModal({
     () => taxonomyCategories.map((category) => category.name),
     [taxonomyCategories]
   );
+  const captureVoice = useVoiceTranscription({
+    token,
+    onTranscript: (transcript) => {
+      setText((previous) => appendVoiceTranscript(previous, transcript));
+      setError("");
+    },
+  });
+  const captureVoiceTranscribing = captureVoice.status === "transcribing";
 
   function getSubcategoryOptions(categoryName) {
     const normalized = normalizeTaxonomyName(categoryName);
@@ -945,7 +1206,8 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
           rows={5}
           placeholder={`Example: Bought groceries for ${RUPEE_SYMBOL}500 and paid ${RUPEE_SYMBOL}1200 for electricity yesterday`}
         />
-        <button className="btn-main" onClick={handleParse} disabled={loading}>
+        <VoiceTranscriptionControls voice={captureVoice} disabled={loading || confirming} />
+        <button className="btn-main" onClick={handleParse} disabled={loading || captureVoiceTranscribing}>
           {loading ? "Preparing..." : "Create Drafts"}
         </button>
       </div>
@@ -2160,6 +2422,14 @@ function AnalyticsPanel({ token, embedded = false }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showDebug, setShowDebug] = useState(false);
+  const analyticsVoice = useVoiceTranscription({
+    token,
+    onTranscript: (transcript) => {
+      setText((previous) => appendVoiceTranscript(previous, transcript));
+      setError("");
+    },
+  });
+  const analyticsVoiceTranscribing = analyticsVoice.status === "transcribing";
 
   const maxPointValue = useMemo(() => {
     if (!result?.chart?.points?.length) return 1;
@@ -2216,7 +2486,7 @@ function AnalyticsPanel({ token, embedded = false }) {
             key={prompt}
             className="btn-ghost prompt-pill"
             onClick={() => void runQuery(prompt)}
-            disabled={loading}
+            disabled={loading || analyticsVoiceTranscribing}
           >
             {prompt}
           </button>
@@ -2229,7 +2499,12 @@ function AnalyticsPanel({ token, embedded = false }) {
           onChange={(e) => setText(e.target.value)}
           placeholder="Ask anything about household spending..."
         />
-        <button className="btn-main" onClick={() => void runQuery()} disabled={loading}>
+        <VoiceTranscriptionControls voice={analyticsVoice} disabled={loading} />
+        <button
+          className="btn-main"
+          onClick={() => void runQuery()}
+          disabled={loading || analyticsVoiceTranscribing}
+        >
           {loading ? "Analyzing..." : "Run Insight"}
         </button>
       </div>
