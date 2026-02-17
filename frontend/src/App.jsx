@@ -106,22 +106,34 @@ function appendVoiceTranscript(existingText, transcript) {
 }
 
 function isVoiceInputSupported() {
-  if (typeof window === "undefined") return false;
-  if (typeof navigator === "undefined") return false;
-  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+  try {
+    if (typeof window === "undefined") return false;
+    const browserNavigator = typeof window.navigator !== "undefined" ? window.navigator : null;
+    if (
+      !browserNavigator ||
+      !browserNavigator.mediaDevices ||
+      typeof browserNavigator.mediaDevices.getUserMedia !== "function"
+    ) {
+      return false;
+    }
+    return typeof window.MediaRecorder !== "undefined";
+  } catch {
     return false;
   }
-  return typeof window.MediaRecorder !== "undefined";
 }
 
 function pickRecorderMimeType() {
-  if (typeof window === "undefined" || typeof window.MediaRecorder === "undefined") {
+  try {
+    if (typeof window === "undefined" || typeof window.MediaRecorder === "undefined") {
+      return "";
+    }
+    if (typeof window.MediaRecorder.isTypeSupported !== "function") {
+      return "";
+    }
+    return RECORDER_MIME_TYPES.find((mimeType) => window.MediaRecorder.isTypeSupported(mimeType)) || "";
+  } catch {
     return "";
   }
-  if (typeof window.MediaRecorder.isTypeSupported !== "function") {
-    return "";
-  }
-  return RECORDER_MIME_TYPES.find((mimeType) => window.MediaRecorder.isTypeSupported(mimeType)) || "";
 }
 
 function extensionFromMimeType(mimeType) {
