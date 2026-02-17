@@ -54,11 +54,17 @@ OPENAI_API_KEY=<your-openai-api-key>
 OPENAI_MODEL=gpt-5.1
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.0-flash
+CEREBRAS_API_KEY=
+CEREBRAS_MODEL=gpt-oss-120b
+GROQ_API_KEY=<your-groq-api-key>
+GROQ_WHISPER_MODEL=whisper-large-v3-turbo
+VOICE_MAX_UPLOAD_MB=10
 ```
 
 Notes:
 - Replace `<your-frontend-domain>` after frontend public domain is generated.
 - Keep `OPENAI_API_KEY` only on backend service (never in frontend).
+- Keep `GROQ_API_KEY` only on backend service (never in frontend).
 
 ## 4. Configure frontend environment variable
 
@@ -98,6 +104,29 @@ Expected:
 - Log an expense
 - Confirm draft expense
 - Open dashboard
+- Test voice capture in Capture tab (`Use Voice` -> `Stop Recording` -> `Create Drafts`)
+- Test voice capture in Insights tab (`Use Voice` -> `Run Insight`)
+
+## 6.1 Voice feature checks (Groq Whisper)
+
+1. Ensure frontend is served over HTTPS (Railway public domain is HTTPS by default).
+- Browser mic permission requires secure context.
+
+2. Verify new API endpoint from authenticated session:
+```bash
+curl -X POST "https://<your-backend-domain>/expenses/transcribe-audio" \
+  -H "Authorization: Bearer <token>" \
+  -F "audio_file=@sample.webm" \
+  -F "language=en"
+```
+Expected response shape:
+```json
+{"text":"...","language":"en"}
+```
+
+3. Payload constraints:
+- Allowed audio types: `webm`, `wav`, `mp3`, `mp4`, `m4a`, `ogg`.
+- Requests above `VOICE_MAX_UPLOAD_MB` return HTTP `413`.
 
 ## 7. Common issues and fixes
 
@@ -121,6 +150,18 @@ Expected:
 - Confirm `LLM_PROVIDER=openai`
 - Confirm `OPENAI_API_KEY` is set in backend service
 - Confirm model name is valid for your key
+
+6. Voice transcription returns `503`:
+- `GROQ_API_KEY` is missing/invalid in backend env.
+- Redeploy backend after updating env.
+
+7. Voice transcription returns `502`:
+- Groq upstream/network issue from backend.
+- Check backend logs for upstream error details and retry.
+
+8. Microphone button appears but recording fails:
+- Browser permission denied. Re-enable microphone for your frontend domain.
+- Confirm frontend is loaded from HTTPS domain, not plain HTTP.
 
 ## 8. Minimal security checklist
 
