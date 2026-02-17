@@ -27,6 +27,15 @@ def test_validate_safe_sql_blocks_disallowed_table() -> None:
     assert "allowed" in reason.lower() or "disallowed" in reason.lower()
 
 
+def test_validate_safe_sql_blocks_queries_without_table_reference() -> None:
+    ok, reason = validate_safe_sql(
+        "SELECT now()",
+        allowed_tables={"household_expenses"},
+    )
+    assert ok is False
+    assert "reference" in reason.lower() or "table" in reason.lower()
+
+
 def test_validate_safe_sql_blocks_invalid_sql() -> None:
     ok, reason = validate_safe_sql(
         "SELECT FROM household_expenses",

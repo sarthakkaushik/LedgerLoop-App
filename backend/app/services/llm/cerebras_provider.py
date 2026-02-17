@@ -1,9 +1,37 @@
+import json
+
 import httpx
 
 from app.services.llm.base import ExpenseParserProvider
 from app.services.llm.parser_utils import parse_result_from_text
 from app.services.llm.prompts import SYSTEM_PROMPT, build_user_prompt
 from app.services.llm.types import ParseContext, ParseResult
+
+
+def _normalize_message_content(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                chunks.append(block)
+                continue
+            if isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+                    continue
+            chunks.append(json.dumps(block))
+        return "\n".join(chunks)
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
+        return json.dumps(content)
+    return str(content)
 
 
 class CerebrasExpenseParserProvider(ExpenseParserProvider):
@@ -38,4 +66,4 @@ class CerebrasExpenseParserProvider(ExpenseParserProvider):
             )
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
-            return parse_result_from_text(content)
+            return parse_result_from_text(_normalize_message_content(content))

@@ -90,6 +90,8 @@ def _validate_with_sqlglot(query: str, *, allowed_tables: set[str]) -> tuple[boo
             return False, "Only SELECT statements are allowed."
 
     table_refs = {tbl.name.lower() for tbl in tree.find_all(exp.Table)}
+    if not table_refs:
+        return False, f"Query must reference at least one allowed table: {', '.join(sorted(allowed_tables))}."
     unknown = sorted(t for t in table_refs if t not in allowed_tables)
     if unknown:
         return False, f"Disallowed table reference: {', '.join(unknown)}."
