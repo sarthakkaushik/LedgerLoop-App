@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Component, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -66,6 +66,41 @@ const GLOBAL_CURRENCY_OPTIONS = [
   { symbol: YEN_SYMBOL, code: "JPY", name: "Japanese Yen" },
   { symbol: "AED", code: "AED", name: "UAE Dirham" },
 ];
+
+function safeStorageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // no-op: storage can be blocked in some browser contexts
+  }
+}
+
+function safeStorageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // no-op: storage can be blocked in some browser contexts
+  }
+}
+
+function safeParseStoredUser(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    safeStorageRemove("expense_auth_user");
+    return null;
+  }
+}
 
 function normalizeTaxonomyName(value) {
   return String(value || "")
@@ -158,17 +193,27 @@ function useVoiceTranscription({ token, onTranscript }) {
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   const [language, setLanguage] = useState("auto");
+  const [supported, setSupported] = useState(false);
+  const [supportChecked, setSupportChecked] = useState(false);
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
   const onTranscriptRef = useRef(onTranscript);
   const mountedRef = useRef(true);
 
-  const supported = useMemo(() => isVoiceInputSupported(), []);
-
   useEffect(() => {
     onTranscriptRef.current = onTranscript;
   }, [onTranscript]);
+
+  useEffect(() => {
+    try {
+      setSupported(isVoiceInputSupported());
+    } catch {
+      setSupported(false);
+    } finally {
+      setSupportChecked(true);
+    }
+  }, []);
 
   function cleanupStream() {
     const stream = streamRef.current;
@@ -193,14 +238,17 @@ function useVoiceTranscription({ token, onTranscript }) {
   }, []);
 
   async function startRecording() {
-    if (!supported) {
+    if (!isVoiceInputSupported()) {
+      setSupported(false);
       setError("Voice input is not supported in this browser.");
       return;
     }
+    setSupported(true);
     if (status !== "idle") return;
     setError("");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const browserNavigator = window.navigator;
+      const stream = await browserNavigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       chunksRef.current = [];
       const mimeType = pickRecorderMimeType();
@@ -278,6 +326,7 @@ function useVoiceTranscription({ token, onTranscript }) {
 
   return {
     supported,
+    supportChecked,
     status,
     error,
     language,
@@ -305,7 +354,7 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
               void voice.startRecording();
             }
           }}
-          disabled={controlsDisabled || !voice.supported}
+          disabled={controlsDisabled || !voice.supportChecked || !voice.supported}
           aria-label={isRecording ? "Stop recording" : "Start voice input"}
         >
           {isRecording ? "Stop Recording" : "Use Voice"}
@@ -315,7 +364,9 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
           <select
             value={voice.language}
             onChange={(event) => voice.setLanguage(event.target.value)}
-            disabled={disabled || isRecording || isTranscribing || !voice.supported}
+            disabled={
+              disabled || isRecording || isTranscribing || !voice.supportChecked || !voice.supported
+            }
           >
             {VOICE_LANGUAGE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -326,7 +377,7 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
         </div>
       </div>
 
-      {!voice.supported && (
+      {voice.supportChecked && !voice.supported && (
         <p className="hint voice-status">
           Voice input is unavailable in this browser. You can continue by typing.
         </p>
@@ -336,6 +387,57 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
       {voice.error && <p className="form-error">{voice.error}</p>}
     </div>
   );
+}
+
+class RuntimeErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: "" };
+  }
+
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      message: String(error?.message || "Unexpected runtime error."),
+    };
+  }
+
+  componentDidCatch(error) {
+    try {
+      console.error("App runtime error:", error);
+    } catch {
+      // no-op
+    }
+  }
+
+  render() {
+    if (!this.state.hasError) {
+      return this.props.children;
+    }
+    return (
+      <main className="app-shell">
+        <section className="panel">
+          <h2>Something went wrong</h2>
+          <p className="hint">
+            The app hit a runtime error. Please reload. If this keeps happening, we will debug using
+            the exact error shown below.
+          </p>
+          <p className="form-error">{this.state.message}</p>
+          <button
+            type="button"
+            className="btn-main"
+            onClick={() => {
+              if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
+                window.location.reload();
+              }
+            }}
+          >
+            Reload App
+          </button>
+        </section>
+      </main>
+    );
+  }
 }
 
 function ConfirmModal({
@@ -2661,11 +2763,11 @@ function InsightsPanel({ token }) {
 
 export default function App() {
   const [auth, setAuth] = useState(() => {
-    const token = localStorage.getItem("expense_auth_token");
-    const userRaw = localStorage.getItem("expense_auth_user");
+    const token = safeStorageGet("expense_auth_token");
+    const userRaw = safeStorageGet("expense_auth_user");
     return {
       token,
-      user: userRaw ? JSON.parse(userRaw) : null,
+      user: safeParseStoredUser(userRaw),
     };
   });
   const [activeTab, setActiveTab] = useState("capture");
@@ -2677,14 +2779,14 @@ export default function App() {
 
   useEffect(() => {
     if (auth?.token) {
-      localStorage.setItem("expense_auth_token", auth.token);
+      safeStorageSet("expense_auth_token", auth.token);
     } else {
-      localStorage.removeItem("expense_auth_token");
+      safeStorageRemove("expense_auth_token");
     }
     if (auth?.user) {
-      localStorage.setItem("expense_auth_user", JSON.stringify(auth.user));
+      safeStorageSet("expense_auth_user", JSON.stringify(auth.user));
     } else {
-      localStorage.removeItem("expense_auth_user");
+      safeStorageRemove("expense_auth_user");
     }
   }, [auth]);
 
@@ -2728,93 +2830,99 @@ export default function App() {
 
   if (!auth?.token) {
     return (
-      <main className="app-shell">
-        <Header user={null} onLogout={() => {}} />
-        <AuthCard onAuthSuccess={setAuth} />
-      </main>
+      <RuntimeErrorBoundary>
+        <main className="app-shell">
+          <Header user={null} onLogout={() => {}} />
+          <AuthCard onAuthSuccess={setAuth} />
+        </main>
+      </RuntimeErrorBoundary>
     );
   }
 
   if (sessionTransitionVisible) {
     return (
-      <main className="app-shell">
-        <SessionTransition />
-      </main>
+      <RuntimeErrorBoundary>
+        <main className="app-shell">
+          <SessionTransition />
+        </main>
+      </RuntimeErrorBoundary>
     );
   }
 
   return (
-    <main className="app-shell">
-      {globalNotice && <div className="app-notice">{globalNotice}</div>}
-      <Header
-        user={auth.user}
-        onQuickAdd={() => {
-          setQuickAddSource("header");
-          setQuickAddOpen(true);
-        }}
-        onLogout={() => {
-          setAuth({ token: null, user: null });
-          setActiveTab("capture");
-          setQuickAddOpen(false);
-          setCapturePrefillText("");
-          setGlobalNotice("");
-        }}
-      />
-      <section className="workspace">
-        <aside className="side-tabs">
-          <p className="kicker">Workspace</p>
-          {tabs.map((tab) => (
-            <button
-              type="button"
-              key={tab.id}
-              className={activeTab === tab.id ? "tab active" : "tab"}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </aside>
-        <div className="content">
-          <div className="content-header">
-            <h1>{tabLabel}</h1>
+    <RuntimeErrorBoundary>
+      <main className="app-shell">
+        {globalNotice && <div className="app-notice">{globalNotice}</div>}
+        <Header
+          user={auth.user}
+          onQuickAdd={() => {
+            setQuickAddSource("header");
+            setQuickAddOpen(true);
+          }}
+          onLogout={() => {
+            setAuth({ token: null, user: null });
+            setActiveTab("capture");
+            setQuickAddOpen(false);
+            setCapturePrefillText("");
+            setGlobalNotice("");
+          }}
+        />
+        <section className="workspace">
+          <aside className="side-tabs">
+            <p className="kicker">Workspace</p>
+            {tabs.map((tab) => (
+              <button
+                type="button"
+                key={tab.id}
+                className={activeTab === tab.id ? "tab active" : "tab"}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </aside>
+          <div className="content">
+            <div className="content-header">
+              <h1>{tabLabel}</h1>
+            </div>
+            {activeTab === "capture" && (
+              <ExpenseLogPanel
+                token={auth.token}
+                prefilledText={capturePrefillText}
+                onPrefilledTextConsumed={() => setCapturePrefillText("")}
+              />
+            )}
+            {activeTab === "ledger" && <LedgerPanel token={auth.token} user={auth.user} />}
+            {activeTab === "insights" && <InsightsPanel token={auth.token} />}
+            {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
+            {activeTab === "settings" && <SettingsPanel token={auth.token} user={auth.user} />}
           </div>
-          {activeTab === "capture" && (
-            <ExpenseLogPanel
-              token={auth.token}
-              prefilledText={capturePrefillText}
-              onPrefilledTextConsumed={() => setCapturePrefillText("")}
-            />
-          )}
-          {activeTab === "ledger" && <LedgerPanel token={auth.token} user={auth.user} />}
-          {activeTab === "insights" && <InsightsPanel token={auth.token} />}
-          {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
-          {activeTab === "settings" && <SettingsPanel token={auth.token} user={auth.user} />}
-        </div>
-      </section>
-      <button
-        type="button"
-        className="quick-add-fab"
-        onClick={() => {
-          setQuickAddSource("fab");
-          setQuickAddOpen(true);
-        }}
-        aria-label="Quick add expense"
-      >
-        +
-      </button>
-      <QuickAddModal
-        open={quickAddOpen}
-        token={auth.token}
-        source={quickAddSource}
-        onClose={() => setQuickAddOpen(false)}
-        onRouteToCapture={(text) => {
-          setCapturePrefillText(text);
-          setActiveTab("capture");
-          setQuickAddOpen(false);
-        }}
-        onNotify={(text) => setGlobalNotice(text)}
-      />
-    </main>
+        </section>
+        <button
+          type="button"
+          className="quick-add-fab"
+          onClick={() => {
+            setQuickAddSource("fab");
+            setQuickAddOpen(true);
+          }}
+          aria-label="Quick add expense"
+        >
+          +
+        </button>
+        <QuickAddModal
+          open={quickAddOpen}
+          token={auth.token}
+          source={quickAddSource}
+          onClose={() => setQuickAddOpen(false)}
+          onRouteToCapture={(text) => {
+            setCapturePrefillText(text);
+            setActiveTab("capture");
+            setQuickAddOpen(false);
+          }}
+          onNotify={(text) => setGlobalNotice(text)}
+        />
+      </main>
+    </RuntimeErrorBoundary>
   );
 }
 
