@@ -31,7 +31,6 @@ const tabs = [
   { id: "ledger", label: "Ledger" },
   { id: "insights", label: "Insights" },
   { id: "people", label: "People & Access" },
-  { id: "settings", label: "Settings" },
 ];
 
 const initialRegister = {
@@ -514,7 +513,6 @@ function SessionTransition() {
 function QuickAddModal({
   open,
   token,
-  source,
   onClose,
   onRouteToCapture,
   onNotify,
@@ -726,12 +724,6 @@ function QuickAddModal({
     onClose();
   }
 
-  function resolveSourceLabel(value) {
-    if (value === "shortcut") return "Shortcut";
-    if (value === "fab") return "Mobile FAB";
-    return "Header";
-  }
-
   if (!open) return null;
 
   return (
@@ -751,17 +743,15 @@ function QuickAddModal({
               <h3>Quick Add</h3>
               <p className="hint">Log expenses instantly from any workspace tab.</p>
             </div>
-            <div className="member-actions">
-              <span className="tool-chip">{resolveSourceLabel(source)}</span>
-              <button
-                type="button"
-                className="btn-ghost"
-                onClick={() => void handleAttemptClose()}
-                disabled={loading || confirming || quickAddVoiceTranscribing}
-              >
-                Close
-              </button>
-            </div>
+            <button
+              type="button"
+              className="quick-add-close"
+              onClick={() => void handleAttemptClose()}
+              disabled={loading || confirming || quickAddVoiceTranscribing}
+              aria-label="Close quick add"
+            >
+              &times;
+            </button>
           </div>
 
           {taxonomyLoading && <p className="hint subtle-loader">Loading category options...</p>}
@@ -2911,7 +2901,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("capture");
   const [sessionTransitionVisible, setSessionTransitionVisible] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
-  const [quickAddSource, setQuickAddSource] = useState("header");
   const [capturePrefillText, setCapturePrefillText] = useState("");
   const [globalNotice, setGlobalNotice] = useState("");
 
@@ -2945,7 +2934,6 @@ export default function App() {
     function onKeyDown(event) {
       if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === "k") {
         event.preventDefault();
-        setQuickAddSource("shortcut");
         setQuickAddOpen(true);
       }
     }
@@ -2961,10 +2949,10 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [globalNotice]);
 
-  const tabLabel = useMemo(
-    () => tabs.find((tab) => tab.id === activeTab)?.label ?? "Capture",
-    [activeTab]
-  );
+  const tabLabel = useMemo(() => {
+    if (activeTab === "settings") return "Settings";
+    return tabs.find((tab) => tab.id === activeTab)?.label ?? "Capture";
+  }, [activeTab]);
 
   if (!auth?.token) {
     return (
@@ -2993,10 +2981,9 @@ export default function App() {
         {globalNotice && <div className="app-notice">{globalNotice}</div>}
         <Header
           user={auth.user}
-          onQuickAdd={() => {
-            setQuickAddSource("header");
-            setQuickAddOpen(true);
-          }}
+          onQuickAdd={() => setQuickAddOpen(true)}
+          onOpenSettings={() => setActiveTab("settings")}
+          settingsActive={activeTab === "settings"}
           onLogout={() => {
             setAuth({ token: null, user: null });
             setActiveTab("capture");
@@ -3039,10 +3026,7 @@ export default function App() {
         <button
           type="button"
           className="quick-add-fab"
-          onClick={() => {
-            setQuickAddSource("fab");
-            setQuickAddOpen(true);
-          }}
+          onClick={() => setQuickAddOpen(true)}
           aria-label="Quick add expense"
         >
           +
@@ -3050,7 +3034,6 @@ export default function App() {
         <QuickAddModal
           open={quickAddOpen}
           token={auth.token}
-          source={quickAddSource}
           onClose={() => setQuickAddOpen(false)}
           onRouteToCapture={(text) => {
             setCapturePrefillText(text);
@@ -3064,7 +3047,7 @@ export default function App() {
   );
 }
 
-function Header({ user, onQuickAdd, onLogout }) {
+function Header({ user, onQuickAdd, onOpenSettings, settingsActive = false, onLogout }) {
   return (
     <header className="topbar">
       <div>
@@ -3072,6 +3055,18 @@ function Header({ user, onQuickAdd, onLogout }) {
         <h2>Household Finance Workspace</h2>
       </div>
       <div className="topbar-actions">
+        {user && (
+          <button
+            className={settingsActive ? "settings-trigger active" : "settings-trigger"}
+            onClick={onOpenSettings}
+            type="button"
+            aria-label="Open settings"
+          >
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M19.43 12.98a7.96 7.96 0 0 0 .05-.98 7.96 7.96 0 0 0-.05-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.2 7.2 0 0 0-1.7-.98l-.38-2.65A.5.5 0 0 0 14.1 2h-4a.5.5 0 0 0-.49.42l-.38 2.65a7.2 7.2 0 0 0-1.7.98l-2.49-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65a7.96 7.96 0 0 0-.05.98c0 .33.02.66.05.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46a.5.5 0 0 0 .6.22l2.49-1c.53.4 1.1.73 1.7.98l.38 2.65a.5.5 0 0 0 .49.42h4a.5.5 0 0 0 .49-.42l.38-2.65c.6-.25 1.17-.58 1.7-.98l2.49 1a.5.5 0 0 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z" />
+            </svg>
+          </button>
+        )}
         {user && (
           <button className="btn-main quick-add-trigger" onClick={onQuickAdd} type="button">
             Quick Add
