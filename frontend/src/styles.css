@@ -548,6 +548,49 @@ input[type="checkbox"] {
   line-height: 1.55;
 }
 
+.assistant-bubble.markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.assistant-bubble.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-bubble.markdown-content p {
+  margin: 0 0 8px;
+}
+
+.assistant-bubble.markdown-content ul,
+.assistant-bubble.markdown-content ol {
+  margin: 0 0 8px 18px;
+  padding: 0;
+}
+
+.assistant-bubble.markdown-content code {
+  font-size: 0.92em;
+  white-space: pre-wrap;
+}
+
+.assistant-bubble.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  display: block;
+  overflow-x: auto;
+}
+
+.assistant-bubble.markdown-content th,
+.assistant-bubble.markdown-content td {
+  border: 1px solid #cfe0ea;
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.assistant-bubble.markdown-content th {
+  background: #eaf5fb;
+}
+
 .draft-editor {
   margin-top: 14px;
 }

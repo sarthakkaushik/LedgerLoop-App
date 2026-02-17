@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import {
   askAnalysis,
@@ -1074,7 +1076,11 @@ function AnalyticsPanel({ token }) {
         <div className="analytics-results">
           <article className="result-card">
             <h3>Assistant</h3>
-            <p className="assistant-bubble">{result.answer}</p>
+            <article className="assistant-bubble markdown-content">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {result.answer ?? ""}
+              </ReactMarkdown>
+            </article>
             <div className="analysis-meta">
               <span className={`route-chip ${result.route}`}>{result.route.toUpperCase()}</span>
               <span className="tool-chip">{result.tool}</span>
