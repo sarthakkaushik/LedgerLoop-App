@@ -477,35 +477,32 @@ code {
   gap: 12px;
 }
 
-.voice-controls {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid #c6dfee;
-  border-radius: 14px;
-  background: linear-gradient(150deg, #f7fcff 0%, #edf6fc 100%);
-  container-type: inline-size;
+.voice-textarea-wrap {
+  position: relative;
 }
 
-.voice-controls-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+.voice-textarea-wrap textarea {
+  padding-right: 56px;
 }
 
-.voice-icon-button {
-  min-width: 138px;
-  height: 48px;
+.voice-textarea-action {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+}
+
+.voice-corner-button {
+  width: 40px;
+  height: 40px;
   border: 1px solid #9ac4d8;
-  border-radius: 999px;
-  padding: 0 16px 0 12px;
+  border-radius: 50%;
   background: #ffffff;
   color: #1b4f6c;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  font-weight: 800;
+  justify-content: center;
+  box-shadow: 0 8px 16px rgba(21, 86, 117, 0.14);
   cursor: pointer;
   transition:
     transform 0.2s ease,
@@ -515,93 +512,48 @@ code {
     color 0.2s ease;
 }
 
-.voice-icon-button:hover:not(:disabled) {
+.voice-corner-button:hover:not(:disabled) {
   transform: translateY(-1px);
   border-color: #7daec6;
-  box-shadow: 0 8px 16px rgba(21, 86, 117, 0.14);
 }
 
-.voice-icon-button:disabled {
+.voice-corner-button:disabled {
   opacity: 0.58;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
-.voice-icon-button.recording {
+.voice-corner-button.recording {
   border-color: #d5a6a6;
   background: #fff3f3;
   color: #7d3535;
 }
 
-.voice-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: linear-gradient(140deg, #0f8fa9, #0a6e84);
-  color: #f5fdff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.voice-icon-button.recording .voice-icon {
-  background: linear-gradient(140deg, #d67575, #ba5050);
-}
-
-.voice-icon svg {
-  width: 15px;
-  height: 15px;
-  fill: currentColor;
-}
-
-.voice-action-text {
-  letter-spacing: 0.01em;
-}
-
-.voice-language-group {
-  display: grid;
-  gap: 5px;
-  margin: 0;
-  min-width: 180px;
-}
-
-.voice-language-group span {
-  font-size: 12px;
-  font-weight: 800;
-  color: #315974;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.voice-language-group select {
-  min-width: 180px;
-}
-
-.voice-status-pill {
-  margin: 0;
-  width: fit-content;
-  border: 1px solid #b7d4e3;
-  border-radius: 999px;
-  padding: 6px 11px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #2b5e7d;
-  background: #f1f9fe;
-}
-
-.voice-status-pill.recording {
-  border-color: #e2bbbb;
-  background: #fff5f5;
-  color: #7d3737;
-}
-
-.voice-status-pill.transcribing {
+.voice-corner-button.transcribing {
   border-color: #a8ccde;
   background: #eaf5fb;
   color: #1f5f7f;
+  cursor: wait;
 }
 
-.voice-status {
+.voice-corner-button .voice-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 0;
+  background: transparent;
+  color: currentColor;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.voice-corner-button .voice-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.voice-feedback {
   margin: 0;
   font-size: 13px;
 }
@@ -789,6 +741,7 @@ input[type="checkbox"] {
   display: grid;
   gap: 12px;
   container-type: inline-size;
+  container-name: quickadd;
 }
 
 .quick-add-header {
@@ -1568,19 +1521,14 @@ input[type="checkbox"] {
 }
 
 @container (max-width: 520px) {
-  .voice-controls-row {
-    flex-direction: column;
-    align-items: stretch;
+  .voice-textarea-action {
+    right: 8px;
+    bottom: 8px;
   }
 
-  .voice-icon-button,
-  .voice-status-pill,
-  .voice-language-group select {
-    width: 100%;
-  }
-
-  .voice-status-pill {
-    text-align: center;
+  .voice-corner-button {
+    width: 38px;
+    height: 38px;
   }
 }
 
@@ -1618,19 +1566,9 @@ input[type="checkbox"] {
     flex-direction: column;
   }
 
-  .voice-controls-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .voice-icon-button,
-  .voice-status-pill,
-  .voice-language-group select {
-    width: 100%;
-  }
-
-  .voice-status-pill {
-    text-align: center;
+  .voice-textarea-action {
+    right: 8px;
+    bottom: 8px;
   }
 
   .quick-add-actions .btn-main,

@@ -109,12 +109,6 @@ function normalizeTaxonomyName(value) {
     .toLowerCase();
 }
 
-const VOICE_LANGUAGE_OPTIONS = [
-  { value: "en", label: "English" },
-  { value: "hi", label: "Hindi" },
-  { value: "es", label: "Spanish" },
-];
-
 const RECORDER_MIME_TYPES = [
   "audio/webm;codecs=opus",
   "audio/webm",
@@ -191,7 +185,6 @@ function resolveVoiceErrorMessage(error) {
 function useVoiceTranscription({ token, onTranscript }) {
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
-  const [language, setLanguage] = useState("en");
   const [supported, setSupported] = useState(false);
   const [supportChecked, setSupportChecked] = useState(false);
   const recorderRef = useRef(null);
@@ -322,7 +315,7 @@ function useVoiceTranscription({ token, onTranscript }) {
       const extension = extensionFromMimeType(audioBlob.type);
       const formData = new FormData();
       formData.append("audio_file", audioBlob, `voice-note.${extension}`);
-      const normalizedLanguage = String(language || "").trim().toLowerCase();
+      const normalizedLanguage = "en";
       if (normalizedLanguage) {
         formData.append("language", normalizedLanguage);
       }
@@ -353,8 +346,6 @@ function useVoiceTranscription({ token, onTranscript }) {
     supportChecked,
     status,
     error,
-    language,
-    setLanguage,
     startRecording,
     stopRecording,
     cancelRecording,
@@ -366,75 +357,55 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
   const isRecording = voice.status === "recording";
   const isTranscribing = voice.status === "transcribing";
   const controlsDisabled = disabled || isTranscribing;
-  const statusText = isRecording
-    ? "Recording now. Tap stop when done."
-    : isTranscribing
-      ? "Transcribing voice note..."
-      : "Voice ready";
 
   return (
-    <div className="voice-controls">
-      <div className="voice-controls-row">
-        <button
-          type="button"
-          className={isRecording ? "voice-icon-button recording" : "voice-icon-button"}
-          onClick={() => {
-            if (isRecording) {
-              void voice.stopRecording();
-            } else {
-              void voice.startRecording();
-            }
-          }}
-          disabled={controlsDisabled || !voice.supportChecked || !voice.supported}
-          aria-label={isRecording ? "Stop recording" : "Start voice input"}
-          aria-pressed={isRecording}
-        >
-          <span className="voice-icon" aria-hidden="true">
-            {isRecording ? (
-              <svg viewBox="0 0 24 24" focusable="false">
-                <rect x="7" y="7" width="10" height="10" rx="2" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
-                <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
-              </svg>
-            )}
-          </span>
-          <span className="voice-action-text">{isRecording ? "Stop" : "Record"}</span>
-        </button>
-        <label className="voice-language-group">
-          <span>Language</span>
-          <select
-            value={voice.language}
-            onChange={(event) => voice.setLanguage(event.target.value)}
-            disabled={
-              disabled || isRecording || isTranscribing || !voice.supportChecked || !voice.supported
-            }
-          >
-            {VOICE_LANGUAGE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <p
-          className={`voice-status-pill${isRecording ? " recording" : isTranscribing ? " transcribing" : ""}`}
-          role="status"
-          aria-live="polite"
-        >
-          {statusText}
-        </p>
-      </div>
+    <button
+      type="button"
+      className={
+        isRecording
+          ? "voice-corner-button recording"
+          : isTranscribing
+            ? "voice-corner-button transcribing"
+            : "voice-corner-button"
+      }
+      onClick={() => {
+        if (isRecording) {
+          void voice.stopRecording();
+        } else {
+          void voice.startRecording();
+        }
+      }}
+      disabled={controlsDisabled || !voice.supportChecked || !voice.supported}
+      aria-label={isRecording ? "Stop recording" : "Start voice input"}
+      aria-pressed={isRecording}
+    >
+      <span className="voice-icon" aria-hidden="true">
+        {isRecording ? (
+          <svg viewBox="0 0 24 24" focusable="false">
+            <rect x="7" y="7" width="10" height="10" rx="2" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
+            <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
+          </svg>
+        )}
+      </span>
+    </button>
+  );
+}
 
+function VoiceTranscriptionFeedback({ voice }) {
+  const isTranscribing = voice.status === "transcribing";
+
+  return (
+    <>
       {voice.supportChecked && !voice.supported && (
-        <p className="hint voice-status">
-          Voice input is unavailable in this browser. You can continue by typing.
-        </p>
+        <p className="hint voice-feedback">Voice input is unavailable in this browser. You can continue by typing.</p>
       )}
-      {voice.error && <p className="form-error">{voice.error}</p>}
-    </div>
+      {isTranscribing && <p className="hint voice-feedback">Transcribing voice note...</p>}
+      {voice.error && <p className="form-error voice-feedback">{voice.error}</p>}
+    </>
   );
 }
 
@@ -797,14 +768,19 @@ function QuickAddModal({
           {taxonomyError && <p className="form-error">{taxonomyError}</p>}
           {error && <p className="form-error">{error}</p>}
           <div className="stack">
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={4}
-              placeholder={`Example: Paid ${RUPEE_SYMBOL}1200 for electricity yesterday and ${RUPEE_SYMBOL}300 for groceries`}
-              autoFocus
-            />
-            <VoiceTranscriptionControls voice={quickAddVoice} disabled={loading || confirming} />
+            <div className="voice-textarea-wrap">
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                rows={4}
+                placeholder={`Example: Paid ${RUPEE_SYMBOL}1200 for electricity yesterday and ${RUPEE_SYMBOL}300 for groceries`}
+                autoFocus
+              />
+              <div className="voice-textarea-action">
+                <VoiceTranscriptionControls voice={quickAddVoice} disabled={loading || confirming} />
+              </div>
+            </div>
+            <VoiceTranscriptionFeedback voice={quickAddVoice} />
             <div className="quick-add-actions">
               <button
                 className="btn-main"
@@ -1391,13 +1367,18 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
       {taxonomyLoading && <p className="hint">Loading household taxonomy...</p>}
       {taxonomyError && <p className="form-error">{taxonomyError}</p>}
       <div className="stack">
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={5}
-          placeholder={`Example: Bought groceries for ${RUPEE_SYMBOL}500 and paid ${RUPEE_SYMBOL}1200 for electricity yesterday`}
-        />
-        <VoiceTranscriptionControls voice={captureVoice} disabled={loading || confirming} />
+        <div className="voice-textarea-wrap">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={5}
+            placeholder={`Example: Bought groceries for ${RUPEE_SYMBOL}500 and paid ${RUPEE_SYMBOL}1200 for electricity yesterday`}
+          />
+          <div className="voice-textarea-action">
+            <VoiceTranscriptionControls voice={captureVoice} disabled={loading || confirming} />
+          </div>
+        </div>
+        <VoiceTranscriptionFeedback voice={captureVoice} />
         <button className="btn-main" onClick={handleParse} disabled={loading || captureVoiceTranscribing}>
           {loading ? "Preparing..." : "Create Drafts"}
         </button>
@@ -2741,13 +2722,18 @@ function AnalyticsPanel({ token, embedded = false }) {
         ))}
       </div>
       <div className="stack">
-        <textarea
-          rows={4}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Ask anything about household spending..."
-        />
-        <VoiceTranscriptionControls voice={analyticsVoice} disabled={loading} />
+        <div className="voice-textarea-wrap">
+          <textarea
+            rows={4}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Ask anything about household spending..."
+          />
+          <div className="voice-textarea-action">
+            <VoiceTranscriptionControls voice={analyticsVoice} disabled={loading} />
+          </div>
+        </div>
+        <VoiceTranscriptionFeedback voice={analyticsVoice} />
         <button
           className="btn-main"
           onClick={() => void runQuery()}
