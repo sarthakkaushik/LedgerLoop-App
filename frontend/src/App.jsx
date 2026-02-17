@@ -45,12 +45,26 @@ const initialLogin = {
   password: "",
 };
 
+const RUPEE_SYMBOL = "\u20B9";
+const EURO_SYMBOL = "\u20ac";
+const POUND_SYMBOL = "\u00a3";
+const YEN_SYMBOL = "\u00a5";
+
 const initialJoin = {
   full_name: "",
   email: "",
   password: "",
   invite_code: "",
 };
+
+const GLOBAL_CURRENCY_OPTIONS = [
+  { symbol: RUPEE_SYMBOL, code: "INR", name: "Indian Rupee" },
+  { symbol: "$", code: "USD", name: "US Dollar" },
+  { symbol: EURO_SYMBOL, code: "EUR", name: "Euro" },
+  { symbol: POUND_SYMBOL, code: "GBP", name: "British Pound" },
+  { symbol: YEN_SYMBOL, code: "JPY", name: "Japanese Yen" },
+  { symbol: "AED", code: "AED", name: "UAE Dirham" },
+];
 
 function normalizeTaxonomyName(value) {
   return String(value || "")
@@ -347,18 +361,17 @@ function QuickAddModal({
           {taxonomyLoading && <p className="hint subtle-loader">Loading category options...</p>}
           {taxonomyError && <p className="form-error">{taxonomyError}</p>}
           {error && <p className="form-error">{error}</p>}
-
           <div className="stack">
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={4}
-              placeholder="Example: Paid 1200 for electricity yesterday"
+              placeholder={`Example: Paid ${RUPEE_SYMBOL}1200 for electricity yesterday and ${RUPEE_SYMBOL}300 for groceries`}
               autoFocus
             />
             <div className="quick-add-actions">
               <button className="btn-main" onClick={handleParse} disabled={loading || confirming}>
-                {loading ? "Parsing..." : "Draft Entries"}
+                {loading ? "Reading..." : "Create Drafts"}
               </button>
               {result?.needs_clarification && (
                 <button className="btn-ghost" onClick={handleSendToCapture} disabled={loading || confirming}>
@@ -368,26 +381,25 @@ function QuickAddModal({
             </div>
           </div>
 
-          {loading && <p className="hint subtle-loader">Understanding your expense input...</p>}
+          {loading && <p className="hint subtle-loader">Reading your expense note...</p>}
 
           {result && (
             <article className="result-card">
               <h4>Assistant</h4>
               <p className="assistant-bubble">
-                {result.assistant_message || "Draft parsing complete. Review and save entries."}
+                {result.assistant_message || "Drafts are ready to review and save."}
               </p>
               <p className="hint">
                 Status:{" "}
                 <strong>{result.needs_clarification ? "Need one more detail" : "Ready to save"}</strong>
               </p>
-              {Array.isArray(result.clarification_questions) &&
-                result.clarification_questions.length > 0 && (
-                  <ul>
-                    {result.clarification_questions.map((question, index) => (
-                      <li key={`${question}-${index}`}>{question}</li>
-                    ))}
-                  </ul>
-                )}
+              {Array.isArray(result.clarification_questions) && result.clarification_questions.length > 0 && (
+                <ul>
+                  {result.clarification_questions.map((question, index) => (
+                    <li key={`${question}-${index}`}>{question}</li>
+                  ))}
+                </ul>
+              )}
             </article>
           )}
 
@@ -421,6 +433,7 @@ function QuickAddModal({
                         Currency
                         <input
                           value={draft.currency || ""}
+                          placeholder="INR"
                           onChange={(e) => updateDraft(index, "currency", e.target.value.toUpperCase())}
                         />
                       </label>
@@ -552,34 +565,38 @@ function AuthCard({ onAuthSuccess }) {
   return (
     <section className="auth-card">
       <div className="brand-slab">
-        <p className="kicker">Family Ledger</p>
+        <p className="kicker">Household Finance</p>
         <h1>LedgerLoop</h1>
         <p className="sub">
-          Chat your expenses, review drafts, and tune your LLM parser from one place.
+          Describe spend in natural language, review smart drafts, then save clean expense
+          records for your household.
         </p>
         <div className="hero-visual" aria-hidden="true">
           <article className="mini-invoice">
-            <p className="tiny">Shared Wallet</p>
-            <strong>$1,876.50</strong>
+            <p className="tiny">Household Balance</p>
+            <strong>{`${RUPEE_SYMBOL}18,765.40`}</strong>
             <small>Updated today</small>
             <div className="invoice-row">
-              <span>Auto split</span>
-              <span>ON</span>
+              <span>Auto categories</span>
+              <span>Enabled</span>
             </div>
           </article>
           <article className="credit-panel">
-            <p className="tiny">LedgerLoop Card</p>
-            <strong>**** 2204</strong>
-            <div className="card-footer">
-              <span>VISA</span>
-              <span>Secure</span>
+            <p className="tiny">Global Currencies</p>
+            <div className="currency-chip-row">
+              {GLOBAL_CURRENCY_OPTIONS.map((currency) => (
+                <span className="currency-chip" key={currency.code} title={`${currency.name} (${currency.code})`}>
+                  <span>{currency.symbol}</span>
+                  <code>{currency.code}</code>
+                </span>
+              ))}
             </div>
           </article>
         </div>
         <div className="logo-strip" aria-hidden="true">
-          <span>autolog</span>
-          <span>familysafe</span>
-          <span>spendflow</span>
+          <span>Smart capture</span>
+          <span>Household ledger</span>
+          <span>Cross-currency</span>
         </div>
       </div>
       <div className="auth-panel">
@@ -917,9 +934,9 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
     <section className="panel">
       <h2>Capture Expenses</h2>
       <p className="hint">
-        Describe spending naturally. Example:{" "}
-        <code>Bought groceries for 500 and paid 1200 for electricity yesterday</code>
+        Describe spending naturally and we'll turn it into expense drafts you can edit before saving.
       </p>
+      <p className="hint">Use currency codes like INR, USD, EUR, GBP, and JPY.</p>
       {taxonomyLoading && <p className="hint">Loading household taxonomy...</p>}
       {taxonomyError && <p className="form-error">{taxonomyError}</p>}
       <div className="stack">
@@ -927,13 +944,13 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={5}
-          placeholder="Type expense message..."
+          placeholder={`Example: Bought groceries for ${RUPEE_SYMBOL}500 and paid ${RUPEE_SYMBOL}1200 for electricity yesterday`}
         />
         <button className="btn-main" onClick={handleParse} disabled={loading}>
-          {loading ? "Analyzing..." : "Draft Entries"}
+          {loading ? "Preparing..." : "Create Drafts"}
         </button>
       </div>
-      {loading && <p className="hint subtle-loader">AI is drafting entries...</p>}
+      {loading && <p className="hint subtle-loader">Preparing your expense draft...</p>}
       {error && <p className="form-error">{error}</p>}
 
       {result && (
@@ -943,10 +960,10 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
             {result.assistant_message ? (
               <article className="assistant-bubble">{result.assistant_message}</article>
             ) : (
-              <p>Draft parsing completed.</p>
+              <p>Draft entries are ready to review.</p>
             )}
             <p className="hint">
-              Mode: <strong>{result.mode === "chat" ? "Conversation" : "Expense Parsing"}</strong>
+              Mode: <strong>{result.mode === "chat" ? "Conversation" : "Smart Capture"}</strong>
             </p>
           </div>
           <div className="result-card">
@@ -993,6 +1010,7 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
                   Currency
                   <input
                     value={draft.currency || ""}
+                    placeholder="INR"
                     onChange={(e) => updateDraft(idx, "currency", e.target.value.toUpperCase())}
                   />
                 </label>
@@ -1278,7 +1296,7 @@ function HouseholdPanel({ token, user }) {
                           }}
                         />
                       </div>
-                      <strong>{item.total.toFixed(2)}</strong>
+                      <strong>{formatCurrencyValue(item.total)}</strong>
                     </div>
                   ))}
                 </div>
@@ -1425,9 +1443,7 @@ function LedgerPanel({ token, user }) {
                       <td>{item.category || "Other"}</td>
                       <td>{item.subcategory || "-"}</td>
                       <td>{item.description || item.merchant_or_item || "-"}</td>
-                      <td>
-                        {Number(item.amount || 0).toFixed(2)} {item.currency}
-                      </td>
+                      <td>{formatCurrencyValue(item.amount, item.currency)}</td>
                       <td>{item.status}</td>
                       <td>
                         {(user?.role === "admin" || item.logged_by_user_id === user?.id) && (
@@ -1455,7 +1471,10 @@ function LedgerPanel({ token, user }) {
         title="Delete this expense?"
         description={
           expenseToDelete
-            ? `Delete expense on ${expenseToDelete.date_incurred} for ${Number(expenseToDelete.amount || 0).toFixed(2)} ${expenseToDelete.currency}?`
+            ? `Delete expense on ${expenseToDelete.date_incurred} for ${formatCurrencyValue(
+                expenseToDelete.amount,
+                expenseToDelete.currency
+              )}?`
             : ""
         }
         confirmLabel="Delete Expense"
@@ -1953,7 +1972,7 @@ function DashboardPanel({ token, embedded = false }) {
             <article className="stat-card">
               <p className="kicker">Current Month</p>
               <h3>{dashboard.period_month}</h3>
-              <p className="metric-value">{dashboard.total_spend.toFixed(2)}</p>
+              <p className="metric-value">{formatCurrencyValue(dashboard.total_spend)}</p>
               <small>
                 {dashboard.period_start} to {dashboard.period_end}
               </small>
@@ -1988,7 +2007,7 @@ function DashboardPanel({ token, embedded = false }) {
                           }}
                         />
                       </div>
-                      <strong>{item.total.toFixed(2)}</strong>
+                      <strong>{formatCurrencyValue(item.total)}</strong>
                     </div>
                   ))}
                 </div>
@@ -2012,7 +2031,7 @@ function DashboardPanel({ token, embedded = false }) {
                           }}
                         />
                       </div>
-                      <strong>{item.total.toFixed(2)}</strong>
+                      <strong>{formatCurrencyValue(item.total)}</strong>
                     </div>
                   ))}
                 </div>
@@ -2036,7 +2055,7 @@ function DashboardPanel({ token, embedded = false }) {
                           }}
                         />
                       </div>
-                      <strong>{item.total.toFixed(2)}</strong>
+                      <strong>{formatCurrencyValue(item.total)}</strong>
                     </div>
                   ))}
                 </div>
@@ -2274,7 +2293,7 @@ function AnalyticsPanel({ token, embedded = false }) {
                         }}
                       />
                     </div>
-                    <strong>{point.value.toFixed(2)}</strong>
+                    <strong>{formatCurrencyValue(point.value)}</strong>
                   </div>
                 ))}
               </div>
