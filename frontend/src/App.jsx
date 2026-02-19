@@ -2347,7 +2347,7 @@ function RecurringPanel({ token, user }) {
   );
 }
 
-function LedgerPanel({ token, onOpenSettings }) {
+function LedgerPanel({ token, user, onOpenSettings }) {
   const [feed, setFeed] = useState(null);
   const [statusFilter, setStatusFilter] = useState("confirmed");
   const [budgetSnapshot, setBudgetSnapshot] = useState(null);
@@ -4124,7 +4124,7 @@ export default function App() {
               />
             )}
             {activeTab === "ledger" && (
-              <LedgerPanel token={auth.token} onOpenSettings={() => setActiveTab("settings")} />
+              <LedgerPanel token={auth.token} user={auth.user} onOpenSettings={() => setActiveTab("settings")} />
             )}
             {activeTab === "recurring" && <RecurringPanel token={auth.token} user={auth.user} />}
             {activeTab === "insights" && <InsightsPanel token={auth.token} />}
