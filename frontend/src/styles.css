@@ -1140,6 +1140,33 @@ input[type="checkbox"] {
   font-weight: 600;
 }
 
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  border: 1px solid #cad9e4;
+  background: #edf5fa;
+  color: #415f78;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.status-pill.confirmed {
+  border-color: #9fd8b9;
+  background: #e9f8ef;
+  color: #20734f;
+}
+
+.status-pill.draft {
+  border-color: #d2dae2;
+  background: #f4f7fa;
+  color: #5a6d80;
+}
+
 .dashboard-header {
   display: flex;
   justify-content: space-between;

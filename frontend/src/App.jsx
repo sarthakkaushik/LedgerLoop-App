@@ -540,6 +540,20 @@ function RecurringSwitch({ checked, disabled = false, onToggle, label }) {
   );
 }
 
+function StatusPill({ status }) {
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
+  const label = normalized ? normalized[0].toUpperCase() + normalized.slice(1) : "-";
+  let className = "status-pill";
+  if (normalized === "confirmed") {
+    className += " confirmed";
+  } else if (normalized === "draft") {
+    className += " draft";
+  }
+  return <span className={className}>{label}</span>;
+}
+
 function SessionTransition() {
   return (
     <section className="session-transition">
@@ -2269,7 +2283,9 @@ function LedgerPanel({ token, user }) {
                               label={`Toggle recurring for expense on ${formatDateValue(item.date_incurred)}`}
                             />
                           </td>
-                          <td>{item.status}</td>
+                          <td>
+                            <StatusPill status={item.status} />
+                          </td>
                           <td>
                             {canDelete && (
                               <button
@@ -2338,7 +2354,9 @@ function LedgerPanel({ token, user }) {
                       </div>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Status</span>
-                        <span className="mobile-data-value">{item.status}</span>
+                        <span className="mobile-data-value">
+                          <StatusPill status={item.status} />
+                        </span>
                       </div>
                       {canDelete && (
                         <div className="mobile-data-actions">
