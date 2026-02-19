@@ -84,6 +84,22 @@ class ExpenseDeleteResponse(BaseModel):
     message: str
 
 
+class ExpenseUpdateRequest(BaseModel):
+    amount: float | None = Field(default=None, gt=0)
+    currency: str | None = Field(default=None, min_length=1, max_length=8)
+    category: str | None = Field(default=None, max_length=80)
+    subcategory: str | None = Field(default=None, max_length=80)
+    description: str | None = Field(default=None, max_length=255)
+    merchant_or_item: str | None = Field(default=None, max_length=255)
+    date_incurred: str | None = None
+
+
+class ExpenseUpdateResponse(BaseModel):
+    item: ExpenseFeedItem
+    message: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ExpenseRecurringUpdateRequest(BaseModel):
     is_recurring: bool
 

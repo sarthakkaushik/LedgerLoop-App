@@ -177,6 +177,14 @@ export async function deleteExpense(token, expenseId) {
   return apiRequest(`/expenses/${expenseId}`, { method: "DELETE", token });
 }
 
+export async function updateExpense(token, expenseId, payload) {
+  return apiRequest(`/expenses/${expenseId}`, {
+    method: "PATCH",
+    token,
+    body: payload,
+  });
+}
+
 export async function updateExpenseRecurring(token, expenseId, isRecurring) {
   return apiRequest(`/expenses/${expenseId}/recurring`, {
     method: "PATCH",

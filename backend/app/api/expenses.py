@@ -34,6 +34,8 @@ from app.schemas.expense import (
     ExpenseDraft,
     ExpenseLogRequest,
     ExpenseLogResponse,
+    ExpenseUpdateRequest,
+    ExpenseUpdateResponse,
     ExpenseRecurringUpdateRequest,
     ExpenseRecurringUpdateResponse,
     RecurringExpenseCreateRequest,
@@ -697,6 +699,104 @@ async def export_expenses_csv(
         content=csv_buffer.getvalue(),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.patch("/{expense_id}", response_model=ExpenseUpdateResponse)
+async def update_expense(
+    expense_id: str,
+    payload: ExpenseUpdateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ExpenseUpdateResponse:
+    try:
+        expense_uuid = UUID(expense_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid expense_id",
+        ) from exc
+
+    expense_result = await session.execute(
+        select(Expense).where(
+            Expense.id == expense_uuid,
+            Expense.household_id == user.household_id,
+        )
+    )
+    expense = expense_result.scalar_one_or_none()
+    if not expense:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Expense not found in your household.",
+        )
+
+    if expense.logged_by_user_id != user.id and user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only edit expenses you logged.",
+        )
+
+    if payload.amount is not None:
+        expense.amount = payload.amount
+
+    if payload.currency is not None:
+        cleaned_currency = payload.currency.strip().upper()
+        if not cleaned_currency:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Currency is required.",
+            )
+        expense.currency = cleaned_currency
+
+    if payload.category is not None:
+        expense.category = _clean_optional_text(payload.category)
+    if payload.subcategory is not None:
+        expense.subcategory = _clean_optional_text(payload.subcategory)
+    if payload.description is not None:
+        expense.description = _clean_optional_text(payload.description)
+    if payload.merchant_or_item is not None:
+        expense.merchant_or_item = _clean_optional_text(payload.merchant_or_item)
+    if payload.date_incurred is not None:
+        try:
+            expense.date_incurred = date.fromisoformat(payload.date_incurred)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid date_incurred",
+            ) from exc
+
+    category_lookup, subcategory_lookup = await _load_taxonomy_lookup(session, user.household_id)
+    if "other" not in category_lookup:
+        category_lookup["other"] = "Other"
+
+    resolved_category, resolved_subcategory, warnings = _normalize_taxonomy_selection(
+        category=expense.category,
+        subcategory=expense.subcategory,
+        category_lookup=category_lookup,
+        subcategory_lookup=subcategory_lookup,
+    )
+    expense.category = resolved_category
+    expense.subcategory = resolved_subcategory
+
+    if expense.amount is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Amount is required.",
+        )
+
+    expense.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    session.add(expense)
+    await session.commit()
+    await session.refresh(expense)
+
+    user_names = await _resolve_user_names(session, {expense.logged_by_user_id})
+    return ExpenseUpdateResponse(
+        item=_to_expense_feed_item(
+            expense,
+            user_names.get(expense.logged_by_user_id, "Unknown"),
+        ),
+        message="Expense updated successfully.",
+        warnings=warnings,
     )
 
 

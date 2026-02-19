@@ -12,6 +12,7 @@ import {
   deleteTaxonomyCategory,
   deleteTaxonomySubcategory,
   deleteExpense,
+  updateExpense,
   deleteHouseholdMember,
   downloadExpenseCsv,
   fetchDashboard,
@@ -561,6 +562,86 @@ function ConfirmModal({
   );
 }
 
+function ExpenseEditModal({ open, busy = false, error = "", form, onChange, onCancel, onSave }) {
+  if (!open) return null;
+
+  return (
+    <div className="confirm-backdrop" role="presentation">
+      <div className="confirm-modal expense-edit-modal" role="dialog" aria-modal="true" aria-labelledby="edit-expense">
+        <h3 id="edit-expense">Edit Expense</h3>
+        <div className="expense-edit-grid">
+          <label className="expense-edit-field">
+            Date
+            <input
+              type="date"
+              value={form.date_incurred}
+              onChange={(e) => onChange("date_incurred", e.target.value)}
+              disabled={busy}
+            />
+          </label>
+          <label className="expense-edit-field">
+            Amount
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={form.amount}
+              onChange={(e) => onChange("amount", e.target.value)}
+              disabled={busy}
+            />
+          </label>
+          <label className="expense-edit-field">
+            Currency
+            <input
+              maxLength={8}
+              value={form.currency}
+              onChange={(e) => onChange("currency", e.target.value.toUpperCase())}
+              disabled={busy}
+            />
+          </label>
+          <label className="expense-edit-field">
+            Category
+            <input
+              maxLength={80}
+              value={form.category}
+              onChange={(e) => onChange("category", e.target.value)}
+              disabled={busy}
+            />
+          </label>
+          <label className="expense-edit-field">
+            Subcategory
+            <input
+              maxLength={80}
+              value={form.subcategory}
+              onChange={(e) => onChange("subcategory", e.target.value)}
+              disabled={busy}
+            />
+          </label>
+          <label className="expense-edit-field expense-edit-field-wide">
+            Description
+            <textarea
+              rows={3}
+              maxLength={255}
+              value={form.description}
+              onChange={(e) => onChange("description", e.target.value)}
+              disabled={busy}
+            />
+          </label>
+        </div>
+        {error && <p className="form-error">{error}</p>}
+        <div className="expense-edit-actions">
+          <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button type="button" className="btn-main" onClick={onSave} disabled={busy}>
+            {busy ? "Saving..." : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PanelSkeleton({ rows = 3 }) {
   return (
     <div className="panel-skeleton" aria-hidden="true">
@@ -605,6 +686,14 @@ function TrashIcon() {
   return (
     <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
       <path d="M9 3a1 1 0 0 0-1 1v1H5a1 1 0 1 0 0 2h.62l1 11.06A2 2 0 0 0 8.61 20h6.78a2 2 0 0 0 1.99-1.94L18.38 7H19a1 1 0 1 0 0-2h-3V4a1 1 0 0 0-1-1H9Zm1 2h4v1h-4V5Zm-1.38 3h6.76l-.95 10.02h-4.86L8.62 8Zm2.38 2a1 1 0 0 0-1 1v5a1 1 0 1 0 2 0v-5a1 1 0 0 0-1-1Zm3 0a1 1 0 0 0-1 1v5a1 1 0 1 0 2 0v-5a1 1 0 0 0-1-1Z" />
+    </svg>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+      <path d="M16.79 3.21a3 3 0 0 1 4.24 4.24L9.58 18.9a1 1 0 0 1-.46.27l-4 1a1 1 0 0 1-1.22-1.22l1-4a1 1 0 0 1 .27-.46L16.79 3.21Zm2.83 1.41a1 1 0 0 0-1.42 0l-1.24 1.24 1.42 1.42 1.24-1.24a1 1 0 0 0 0-1.42Zm-2.66 4.07-1.42-1.42-8.73 8.73-.57 2.27 2.27-.57 8.45-8.45Z" />
     </svg>
   );
 }
@@ -2245,7 +2334,8 @@ function RecurringPanel({ token, user }) {
                   </thead>
                   <tbody>
                     {feed.items.map((item) => {
-                      const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                      const canEdit = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                      const canDelete = canEdit;
                       return (
                         <tr key={item.id}>
                           <td>{formatDateValue(item.date_incurred)}</td>
@@ -2357,6 +2447,17 @@ function LedgerPanel({ token, user, onOpenSettings }) {
   const [updatingRecurringId, setUpdatingRecurringId] = useState(null);
   const [downloadingCsv, setDownloadingCsv] = useState(false);
   const [expenseToDelete, setExpenseToDelete] = useState(null);
+  const [expenseToEdit, setExpenseToEdit] = useState(null);
+  const [expenseEditDraft, setExpenseEditDraft] = useState({
+    date_incurred: "",
+    amount: "",
+    currency: "INR",
+    category: "",
+    subcategory: "",
+    description: "",
+  });
+  const [updatingExpenseId, setUpdatingExpenseId] = useState(null);
+  const [editError, setEditError] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const budgetCurrency = useMemo(() => {
@@ -2458,6 +2559,79 @@ function LedgerPanel({ token, user, onOpenSettings }) {
     }
   }
 
+  function openExpenseEdit(item) {
+    setExpenseToEdit(item);
+    setExpenseEditDraft({
+      date_incurred: String(item?.date_incurred || todayIsoDate()),
+      amount: item?.amount === null || item?.amount === undefined ? "" : String(item.amount),
+      currency: String(item?.currency || "INR").toUpperCase(),
+      category: String(item?.category || ""),
+      subcategory: String(item?.subcategory || ""),
+      description: String(item?.description || item?.merchant_or_item || ""),
+    });
+    setEditError("");
+  }
+
+  function closeExpenseEdit() {
+    if (updatingExpenseId) return;
+    setExpenseToEdit(null);
+    setEditError("");
+  }
+
+  function updateExpenseEditField(field, value) {
+    setExpenseEditDraft((previous) => ({ ...previous, [field]: value }));
+    setEditError("");
+  }
+
+  async function handleSaveExpenseEdit() {
+    if (!expenseToEdit) return;
+    const amountNumeric = parseNumeric(expenseEditDraft.amount);
+    if (amountNumeric === null || amountNumeric <= 0) {
+      setEditError("Enter a valid amount greater than 0.");
+      return;
+    }
+    const dateIncurred = String(expenseEditDraft.date_incurred || "").trim();
+    if (!dateIncurred) {
+      setEditError("Select a valid date.");
+      return;
+    }
+    const currency = String(expenseEditDraft.currency || "").trim().toUpperCase();
+    if (!currency) {
+      setEditError("Currency is required.");
+      return;
+    }
+
+    setUpdatingExpenseId(expenseToEdit.id);
+    setError("");
+    setMessage("");
+    setEditError("");
+    try {
+      const payload = {
+        amount: Number(amountNumeric.toFixed(2)),
+        currency,
+        category: String(expenseEditDraft.category || "").trim(),
+        subcategory: String(expenseEditDraft.subcategory || "").trim(),
+        description: String(expenseEditDraft.description || "").trim(),
+        date_incurred: dateIncurred,
+      };
+      const data = await updateExpense(token, expenseToEdit.id, payload);
+      const warnings = Array.isArray(data?.warnings)
+        ? data.warnings.map((warning) => String(warning || "").trim()).filter(Boolean)
+        : [];
+      const warningSuffix =
+        warnings.length > 0
+          ? ` (${warnings[0]}${warnings.length > 1 ? ` +${warnings.length - 1} more` : ""})`
+          : "";
+      setMessage(`${data?.message || "Expense updated successfully."}${warningSuffix}`);
+      setExpenseToEdit(null);
+      await loadLedgerData();
+    } catch (err) {
+      setEditError(err.message);
+    } finally {
+      setUpdatingExpenseId(null);
+    }
+  }
+
   return (
     <section className="panel">
       <p className="hint">Manage and review your recent household expenses.</p>
@@ -2529,7 +2703,8 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                   </thead>
                   <tbody>
                     {feed.items.map((item) => {
-                      const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                      const canEdit = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                      const canDelete = canEdit;
                       return (
                         <tr key={item.id}>
                           <td>{formatDateValue(item.date_incurred)}</td>
@@ -2543,7 +2718,7 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                           <td>
                             <RecurringSwitch
                               checked={Boolean(item.is_recurring)}
-                              disabled={updatingRecurringId === item.id}
+                              disabled={updatingRecurringId === item.id || updatingExpenseId === item.id}
                               onToggle={(nextValue) => handleToggleRecurring(item, nextValue)}
                               label={`Toggle recurring for expense on ${formatDateValue(item.date_incurred)}`}
                             />
@@ -2552,19 +2727,34 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                             <StatusPill status={item.status} />
                           </td>
                           <td>
-                            {canDelete && (
-                              <button
-                                type="button"
-                                className="icon-delete-button"
-                                onClick={() => setExpenseToDelete(item)}
-                                aria-label={`Delete expense on ${formatDateValue(item.date_incurred)}`}
-                                title="Delete expense"
-                                disabled={deletingExpenseId === item.id}
-                              >
-                                <TrashIcon />
-                                <span className="sr-only">Delete expense</span>
-                              </button>
-                            )}
+                            <div className="table-row-actions">
+                              {canEdit && (
+                                <button
+                                  type="button"
+                                  className="icon-edit-button"
+                                  onClick={() => openExpenseEdit(item)}
+                                  aria-label={`Edit expense on ${formatDateValue(item.date_incurred)}`}
+                                  title="Edit expense"
+                                  disabled={deletingExpenseId === item.id || updatingExpenseId === item.id}
+                                >
+                                  <EditIcon />
+                                  <span className="sr-only">Edit expense</span>
+                                </button>
+                              )}
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  className="icon-delete-button"
+                                  onClick={() => setExpenseToDelete(item)}
+                                  aria-label={`Delete expense on ${formatDateValue(item.date_incurred)}`}
+                                  title="Delete expense"
+                                  disabled={deletingExpenseId === item.id || updatingExpenseId === item.id}
+                                >
+                                  <TrashIcon />
+                                  <span className="sr-only">Delete expense</span>
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -2575,7 +2765,8 @@ function LedgerPanel({ token, user, onOpenSettings }) {
 
               <div className="mobile-data-list mobile-cards-only">
                 {feed.items.map((item) => {
-                  const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                  const canEdit = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                  const canDelete = canEdit;
                   return (
                     <article className="mobile-data-card" key={`mobile-${item.id}`}>
                       <div className="mobile-data-row">
@@ -2611,7 +2802,7 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                         <span className="mobile-data-value">
                           <RecurringSwitch
                             checked={Boolean(item.is_recurring)}
-                            disabled={updatingRecurringId === item.id}
+                            disabled={updatingRecurringId === item.id || updatingExpenseId === item.id}
                             onToggle={(nextValue) => handleToggleRecurring(item, nextValue)}
                             label={`Toggle recurring for expense on ${formatDateValue(item.date_incurred)}`}
                           />
@@ -2623,19 +2814,34 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                           <StatusPill status={item.status} />
                         </span>
                       </div>
-                      {canDelete && (
+                      {(canEdit || canDelete) && (
                         <div className="mobile-data-actions">
-                          <button
-                            type="button"
-                            className="icon-delete-button"
-                            onClick={() => setExpenseToDelete(item)}
-                            aria-label={`Delete expense on ${formatDateValue(item.date_incurred)}`}
-                            title="Delete expense"
-                            disabled={deletingExpenseId === item.id}
-                          >
-                            <TrashIcon />
-                            <span className="sr-only">Delete expense</span>
-                          </button>
+                          {canEdit && (
+                            <button
+                              type="button"
+                              className="icon-edit-button"
+                              onClick={() => openExpenseEdit(item)}
+                              aria-label={`Edit expense on ${formatDateValue(item.date_incurred)}`}
+                              title="Edit expense"
+                              disabled={deletingExpenseId === item.id || updatingExpenseId === item.id}
+                            >
+                              <EditIcon />
+                              <span className="sr-only">Edit expense</span>
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button
+                              type="button"
+                              className="icon-delete-button"
+                              onClick={() => setExpenseToDelete(item)}
+                              aria-label={`Delete expense on ${formatDateValue(item.date_incurred)}`}
+                              title="Delete expense"
+                              disabled={deletingExpenseId === item.id || updatingExpenseId === item.id}
+                            >
+                              <TrashIcon />
+                              <span className="sr-only">Delete expense</span>
+                            </button>
+                          )}
                         </div>
                       )}
                     </article>
@@ -2646,6 +2852,16 @@ function LedgerPanel({ token, user, onOpenSettings }) {
           )}
         </article>
       )}
+
+      <ExpenseEditModal
+        open={Boolean(expenseToEdit)}
+        busy={Boolean(expenseToEdit && updatingExpenseId === expenseToEdit.id)}
+        error={editError}
+        form={expenseEditDraft}
+        onChange={updateExpenseEditField}
+        onCancel={closeExpenseEdit}
+        onSave={handleSaveExpenseEdit}
+      />
 
       <ConfirmModal
         open={Boolean(expenseToDelete)}

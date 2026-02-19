@@ -935,6 +935,45 @@ a:focus-visible {
     opacity var(--motion-fast) var(--ease-standard);
 }
 
+.icon-edit-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #98a9bd;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.72;
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard);
+}
+
+.icon-edit-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.icon-edit-button:hover:not(:disabled) {
+  color: #2f61c8;
+  background: #eef4ff;
+  border-color: #c8d8f7;
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.icon-edit-button:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
 .icon-delete-button svg {
   width: 18px;
   height: 18px;
@@ -958,9 +997,19 @@ a:focus-visible {
   opacity: 0.26;
 }
 
+.desktop-table-only .icon-edit-button {
+  opacity: 0.26;
+}
+
 .desktop-table-only tr:hover .icon-delete-button,
 .desktop-table-only tr:focus-within .icon-delete-button,
 .desktop-table-only .icon-delete-button:focus-visible {
+  opacity: 1;
+}
+
+.desktop-table-only tr:hover .icon-edit-button,
+.desktop-table-only tr:focus-within .icon-edit-button,
+.desktop-table-only .icon-edit-button:focus-visible {
   opacity: 1;
 }
 
@@ -1114,6 +1163,30 @@ a:focus-visible {
 }
 
 .confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.expense-edit-modal {
+  width: min(640px, 100%);
+}
+
+.expense-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.expense-edit-field {
+  min-width: 0;
+}
+
+.expense-edit-field-wide {
+  grid-column: 1 / -1;
+}
+
+.expense-edit-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -2263,7 +2336,14 @@ a:focus-visible {
 .recurring-table th:last-child,
 .recurring-table td:last-child {
   text-align: center;
-  width: 68px;
+  width: 96px;
+}
+
+.table-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 
 .mobile-data-list {
@@ -2320,8 +2400,10 @@ a:focus-visible {
   margin-top: 10px;
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
 }
 
+.mobile-data-actions .icon-edit-button,
 .mobile-data-actions .icon-delete-button {
   width: 38px;
   height: 38px;
@@ -2880,6 +2962,10 @@ a:focus-visible {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+  }
+
+  .expense-edit-grid {
+    grid-template-columns: 1fr;
   }
 }
 
