@@ -1367,6 +1367,40 @@ input[type="checkbox"] {
   margin-top: 12px;
 }
 
+.ledger-toolbar {
+  margin-bottom: 12px;
+  border: 1px solid #d7e7ef;
+  border-radius: 10px;
+  background: #f7fcff;
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.ledger-toolbar-left {
+  display: flex;
+  align-items: flex-end;
+}
+
+.ledger-toolbar-label {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+  color: #2f5874;
+}
+
+.ledger-toolbar-label select {
+  min-width: 130px;
+}
+
+.ledger-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
 .prompt-pills {
   display: flex;
   flex-wrap: wrap;
@@ -1625,6 +1659,15 @@ input[type="checkbox"] {
   .dashboard-header {
     align-items: flex-end;
     flex-direction: row;
+  }
+
+  .ledger-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+  }
+
+  .ledger-toolbar-right {
+    justify-content: flex-end;
   }
 
   .bar-row {

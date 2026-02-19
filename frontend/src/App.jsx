@@ -2204,12 +2204,9 @@ function LedgerPanel({ token, user }) {
         <PanelSkeleton rows={7} />
       ) : (
         <article className="result-card household-ledger">
-          <div className="row draft-header">
-            <div className="member-actions">
-              <button className="btn-ghost" type="button" onClick={loadLedgerData} disabled={loading}>
-                Refresh
-              </button>
-              <label>
+          <div className="ledger-toolbar">
+            <div className="ledger-toolbar-left">
+              <label className="ledger-toolbar-label">
                 Status
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
                   <option value="confirmed">Confirmed</option>
@@ -2217,6 +2214,11 @@ function LedgerPanel({ token, user }) {
                   <option value="all">All</option>
                 </select>
               </label>
+            </div>
+            <div className="ledger-toolbar-right">
+              <button className="btn-ghost" type="button" onClick={loadLedgerData} disabled={loading}>
+                Refresh
+              </button>
               <button
                 type="button"
                 className="btn-ghost"
