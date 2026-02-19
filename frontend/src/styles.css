@@ -716,6 +716,70 @@ input[type="checkbox"] {
   animation: enter-up 0.25s ease both;
 }
 
+.toast-notice {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 70;
+  max-width: min(360px, calc(100vw - 28px));
+  border: 1px solid #b8deca;
+  border-radius: 12px;
+  background: #effaf4;
+  color: #1e6e4d;
+  padding: 10px 12px;
+  font-weight: 700;
+  box-shadow: 0 12px 26px rgba(10, 44, 63, 0.16);
+  animation: enter-up 0.25s ease both;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.icon-delete-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #8ca3b6;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.icon-delete-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.icon-delete-button:hover:not(:disabled) {
+  color: #b53f3f;
+  background: #fff1f1;
+  border-color: #edcbcb;
+  transform: translateY(-1px);
+}
+
+.icon-delete-button:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
 .subtle-loader {
   margin-top: 8px;
   font-size: 13px;
@@ -1032,13 +1096,48 @@ input[type="checkbox"] {
   width: auto;
 }
 
-.ledger-recurring-toggle {
-  margin-top: 0;
-  justify-content: flex-start;
+.recurring-switch {
+  width: 46px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid #c8dae6;
+  background: #e8f0f6;
+  padding: 3px;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease;
 }
 
-.mobile-recurring-toggle {
-  justify-content: flex-end;
+.recurring-switch.on {
+  border-color: #0e8198;
+  background: linear-gradient(140deg, #0f92ac, #0c728a);
+}
+
+.recurring-switch-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  transform: translateX(0);
+  transition: transform 0.2s ease;
+}
+
+.recurring-switch.on .recurring-switch-thumb {
+  transform: translateX(18px);
+}
+
+.recurring-switch:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.empty-value {
+  color: #8ea4b7;
+  font-weight: 600;
 }
 
 .dashboard-header {
@@ -1371,10 +1470,17 @@ input[type="checkbox"] {
 
 .mobile-data-actions {
   margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
 }
 
-.mobile-data-actions .btn-danger {
-  width: 100%;
+.mobile-data-actions .icon-delete-button {
+  width: 38px;
+  height: 38px;
+}
+
+.mobile-data-value .recurring-switch {
+  margin-left: auto;
 }
 
 .bar-list {
@@ -1611,6 +1717,13 @@ input[type="checkbox"] {
 @media (max-width: 680px) {
   .app-shell {
     padding: 12px;
+  }
+
+  .toast-notice {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    max-width: none;
   }
 
   .topbar {

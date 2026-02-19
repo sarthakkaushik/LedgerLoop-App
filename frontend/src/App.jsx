@@ -29,7 +29,7 @@ import {
 } from "./api";
 
 const tabs = [
-  { id: "capture", label: "Capture" },
+  { id: "capture", label: "Add Expense" },
   { id: "ledger", label: "Ledger" },
   { id: "recurring", label: "Recurring" },
   { id: "insights", label: "Insights" },
@@ -507,6 +507,39 @@ function PanelSkeleton({ rows = 3 }) {
   );
 }
 
+function ToastNotice({ message }) {
+  if (!message) return null;
+  return (
+    <div className="toast-notice" role="status" aria-live="polite">
+      {message}
+    </div>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+      <path d="M9 3a1 1 0 0 0-1 1v1H5a1 1 0 1 0 0 2h.62l1 11.06A2 2 0 0 0 8.61 20h6.78a2 2 0 0 0 1.99-1.94L18.38 7H19a1 1 0 1 0 0-2h-3V4a1 1 0 0 0-1-1H9Zm1 2h4v1h-4V5Zm-1.38 3h6.76l-.95 10.02h-4.86L8.62 8Zm2.38 2a1 1 0 0 0-1 1v5a1 1 0 1 0 2 0v-5a1 1 0 0 0-1-1Zm3 0a1 1 0 0 0-1 1v5a1 1 0 1 0 2 0v-5a1 1 0 0 0-1-1Z" />
+    </svg>
+  );
+}
+
+function RecurringSwitch({ checked, disabled = false, onToggle, label }) {
+  return (
+    <button
+      type="button"
+      className={checked ? "recurring-switch on" : "recurring-switch"}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onToggle(!checked)}
+      disabled={disabled}
+    >
+      <span className="recurring-switch-thumb" />
+    </button>
+  );
+}
+
 function SessionTransition() {
   return (
     <section className="session-transition">
@@ -708,11 +741,11 @@ function QuickAddModal({
   function handleSendToCapture() {
     const captureText = text.trim();
     if (!captureText) {
-      onNotify("Type your clarification first, then send to Capture.");
+      onNotify("Type your clarification first, then send to Add Expense.");
       return;
     }
     onRouteToCapture(captureText);
-    onNotify("Moved to Capture for detailed review.");
+    onNotify("Moved to Add Expense for detailed review.");
     resetModalState();
     onClose();
   }
@@ -792,7 +825,7 @@ function QuickAddModal({
                   onClick={handleSendToCapture}
                   disabled={loading || confirming || quickAddVoiceTranscribing}
                 >
-                  Send to Capture Review
+                  Send to Add Expense
                 </button>
               )}
             </div>
@@ -1357,7 +1390,7 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
 
   return (
     <section className="panel">
-      <h2>Capture Expenses</h2>
+      <h2>Add Expenses</h2>
       <p className="hint">
         Describe spending naturally and we'll turn it into expense drafts you can edit before saving.
       </p>
@@ -1393,7 +1426,7 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
               <p>Draft entries are ready to review.</p>
             )}
             <p className="hint">
-              Mode: <strong>{result.mode === "chat" ? "Conversation" : "Smart Capture"}</strong>
+              Mode: <strong>{result.mode === "chat" ? "Conversation" : "Smart Drafting"}</strong>
             </p>
           </div>
           <div className="result-card">
@@ -1793,6 +1826,14 @@ function RecurringPanel({ token, user }) {
     loadRecurringData();
   }, [token]);
 
+  useEffect(() => {
+    if (!message) return;
+    const timer = setTimeout(() => {
+      setMessage("");
+    }, 2800);
+    return () => clearTimeout(timer);
+  }, [message]);
+
   function updateForm(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }));
   }
@@ -1862,7 +1903,6 @@ function RecurringPanel({ token, user }) {
       </div>
       <p className="hint">Track monthly bills like rent, school fees, subscriptions, and other repeat spends.</p>
       {error && <p className="form-error">{error}</p>}
-      {message && <p className="form-ok">{message}</p>}
       {warnings.length > 0 && (
         <ul className="taxonomy-warnings">
           {warnings.map((warning, index) => (
@@ -1974,7 +2014,7 @@ function RecurringPanel({ token, user }) {
                       const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
                       return (
                         <tr key={item.id}>
-                          <td>{item.date_incurred}</td>
+                          <td>{formatDateValue(item.date_incurred)}</td>
                           <td>{item.logged_by_name}</td>
                           <td>{item.category || "Other"}</td>
                           <td>{item.description || item.merchant_or_item || "-"}</td>
@@ -1983,11 +2023,14 @@ function RecurringPanel({ token, user }) {
                             {canDelete && (
                               <button
                                 type="button"
-                                className="btn-danger"
+                                className="icon-delete-button"
                                 onClick={() => setExpenseToDelete(item)}
+                                aria-label={`Delete recurring expense on ${formatDateValue(item.date_incurred)}`}
+                                title="Delete recurring expense"
                                 disabled={deletingExpenseId === item.id}
                               >
-                                {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
+                                <TrashIcon />
+                                <span className="sr-only">Delete recurring expense</span>
                               </button>
                             )}
                           </td>
@@ -2005,7 +2048,7 @@ function RecurringPanel({ token, user }) {
                     <article className="mobile-data-card" key={`recurring-mobile-${item.id}`}>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Date</span>
-                        <strong className="mobile-data-value">{item.date_incurred}</strong>
+                        <strong className="mobile-data-value">{formatDateValue(item.date_incurred)}</strong>
                       </div>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Logged By</span>
@@ -2029,11 +2072,14 @@ function RecurringPanel({ token, user }) {
                         <div className="mobile-data-actions">
                           <button
                             type="button"
-                            className="btn-danger"
+                            className="icon-delete-button"
                             onClick={() => setExpenseToDelete(item)}
+                            aria-label={`Delete recurring expense on ${formatDateValue(item.date_incurred)}`}
+                            title="Delete recurring expense"
                             disabled={deletingExpenseId === item.id}
                           >
-                            {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
+                            <TrashIcon />
+                            <span className="sr-only">Delete recurring expense</span>
                           </button>
                         </div>
                       )}
@@ -2051,7 +2097,7 @@ function RecurringPanel({ token, user }) {
         title="Delete this recurring expense?"
         description={
           expenseToDelete
-            ? `Delete recurring expense on ${expenseToDelete.date_incurred} for ${formatCurrencyValue(
+            ? `Delete recurring expense on ${formatDateValue(expenseToDelete.date_incurred)} for ${formatCurrencyValue(
                 expenseToDelete.amount,
                 expenseToDelete.currency
               )}?`
@@ -2062,6 +2108,7 @@ function RecurringPanel({ token, user }) {
         onCancel={() => setExpenseToDelete(null)}
         onConfirm={handleDeleteExpense}
       />
+      <ToastNotice message={message} />
     </section>
   );
 }
@@ -2093,6 +2140,14 @@ function LedgerPanel({ token, user }) {
   useEffect(() => {
     loadLedgerData();
   }, [statusFilter, token]);
+
+  useEffect(() => {
+    if (!message) return;
+    const timer = setTimeout(() => {
+      setMessage("");
+    }, 2800);
+    return () => clearTimeout(timer);
+  }, [message]);
 
   async function handleDownloadCsv() {
     setDownloadingCsv(true);
@@ -2142,9 +2197,8 @@ function LedgerPanel({ token, user }) {
 
   return (
     <section className="panel">
-      <p className="hint">Review logged expenses, export CSV, and clean incorrect entries.</p>
+      <p className="hint">Manage and review your recent household expenses.</p>
       {error && <p className="form-error">{error}</p>}
-      {message && <p className="form-ok">{message}</p>}
 
       {loading ? (
         <PanelSkeleton rows={7} />
@@ -2197,37 +2251,35 @@ function LedgerPanel({ token, user }) {
                       const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
                       return (
                         <tr key={item.id}>
-                          <td>{item.date_incurred}</td>
+                          <td>{formatDateValue(item.date_incurred)}</td>
                           <td>{item.logged_by_name}</td>
                           <td>{item.category || "Other"}</td>
-                          <td>{item.subcategory || "-"}</td>
+                          <td>
+                            {item.subcategory ? item.subcategory : <span className="empty-value">-</span>}
+                          </td>
                           <td>{item.description || item.merchant_or_item || "-"}</td>
                           <td>{formatCurrencyValue(item.amount, item.currency)}</td>
                           <td>
-                            <label className="inline-toggle ledger-recurring-toggle">
-                              <input
-                                type="checkbox"
-                                checked={Boolean(item.is_recurring)}
-                                onChange={(e) => handleToggleRecurring(item, e.target.checked)}
-                                disabled={updatingRecurringId === item.id}
-                              />
-                              {updatingRecurringId === item.id
-                                ? "Saving..."
-                                : item.is_recurring
-                                  ? "Yes"
-                                  : "No"}
-                            </label>
+                            <RecurringSwitch
+                              checked={Boolean(item.is_recurring)}
+                              disabled={updatingRecurringId === item.id}
+                              onToggle={(nextValue) => handleToggleRecurring(item, nextValue)}
+                              label={`Toggle recurring for expense on ${formatDateValue(item.date_incurred)}`}
+                            />
                           </td>
                           <td>{item.status}</td>
                           <td>
                             {canDelete && (
                               <button
                                 type="button"
-                                className="btn-danger"
+                                className="icon-delete-button"
                                 onClick={() => setExpenseToDelete(item)}
+                                aria-label={`Delete expense on ${formatDateValue(item.date_incurred)}`}
+                                title="Delete expense"
                                 disabled={deletingExpenseId === item.id}
                               >
-                                {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
+                                <TrashIcon />
+                                <span className="sr-only">Delete expense</span>
                               </button>
                             )}
                           </td>
@@ -2245,7 +2297,7 @@ function LedgerPanel({ token, user }) {
                     <article className="mobile-data-card" key={`mobile-${item.id}`}>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Date</span>
-                        <strong className="mobile-data-value">{item.date_incurred}</strong>
+                        <strong className="mobile-data-value">{formatDateValue(item.date_incurred)}</strong>
                       </div>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Logged By</span>
@@ -2257,7 +2309,9 @@ function LedgerPanel({ token, user }) {
                       </div>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Subcategory</span>
-                        <span className="mobile-data-value">{item.subcategory || "-"}</span>
+                        <span className="mobile-data-value">
+                          {item.subcategory ? item.subcategory : <span className="empty-value">-</span>}
+                        </span>
                       </div>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Description</span>
@@ -2272,19 +2326,12 @@ function LedgerPanel({ token, user }) {
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Recurring</span>
                         <span className="mobile-data-value">
-                          <label className="inline-toggle ledger-recurring-toggle mobile-recurring-toggle">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(item.is_recurring)}
-                              onChange={(e) => handleToggleRecurring(item, e.target.checked)}
-                              disabled={updatingRecurringId === item.id}
-                            />
-                            {updatingRecurringId === item.id
-                              ? "Saving..."
-                              : item.is_recurring
-                                ? "Yes"
-                                : "No"}
-                          </label>
+                          <RecurringSwitch
+                            checked={Boolean(item.is_recurring)}
+                            disabled={updatingRecurringId === item.id}
+                            onToggle={(nextValue) => handleToggleRecurring(item, nextValue)}
+                            label={`Toggle recurring for expense on ${formatDateValue(item.date_incurred)}`}
+                          />
                         </span>
                       </div>
                       <div className="mobile-data-row">
@@ -2295,11 +2342,14 @@ function LedgerPanel({ token, user }) {
                         <div className="mobile-data-actions">
                           <button
                             type="button"
-                            className="btn-danger"
+                            className="icon-delete-button"
                             onClick={() => setExpenseToDelete(item)}
+                            aria-label={`Delete expense on ${formatDateValue(item.date_incurred)}`}
+                            title="Delete expense"
                             disabled={deletingExpenseId === item.id}
                           >
-                            {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
+                            <TrashIcon />
+                            <span className="sr-only">Delete expense</span>
                           </button>
                         </div>
                       )}
@@ -2317,7 +2367,7 @@ function LedgerPanel({ token, user }) {
         title="Delete this expense?"
         description={
           expenseToDelete
-            ? `Delete expense on ${expenseToDelete.date_incurred} for ${formatCurrencyValue(
+            ? `Delete expense on ${formatDateValue(expenseToDelete.date_incurred)} for ${formatCurrencyValue(
                 expenseToDelete.amount,
                 expenseToDelete.currency
               )}?`
@@ -2328,6 +2378,7 @@ function LedgerPanel({ token, user }) {
         onCancel={() => setExpenseToDelete(null)}
         onConfirm={handleDeleteExpense}
       />
+      <ToastNotice message={message} />
     </section>
   );
 }
@@ -3317,7 +3368,7 @@ export default function App() {
 
   const tabLabel = useMemo(() => {
     if (activeTab === "settings") return "Settings";
-    return tabs.find((tab) => tab.id === activeTab)?.label ?? "Capture";
+    return tabs.find((tab) => tab.id === activeTab)?.label ?? "Add Expense";
   }, [activeTab]);
 
   if (!auth?.token) {
