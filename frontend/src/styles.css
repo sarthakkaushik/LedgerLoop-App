@@ -1185,20 +1185,22 @@ a:focus-visible {
   width: 46px;
   height: 28px;
   border-radius: 999px;
-  border: 1px solid #c8dae6;
-  background: #e8f0f6;
+  border: 1px solid #cfd9e6;
+  background: #e9eef5;
   padding: 3px;
   display: inline-flex;
   align-items: center;
   cursor: pointer;
   transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease;
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
 }
 
 .recurring-switch.on {
-  border-color: #0e8198;
-  background: linear-gradient(140deg, #0f92ac, #0c728a);
+  border-color: #2a5fcc;
+  background: linear-gradient(155deg, #2f6df6, #2556cf);
+  box-shadow: 0 6px 14px rgba(37, 86, 207, 0.25);
 }
 
 .recurring-switch-thumb {
@@ -1341,16 +1343,16 @@ a:focus-visible {
   width: 100%;
   justify-content: space-between;
   gap: 6px;
-  border: 1px solid #d6e7f1;
-  background: #edf6fc;
+  border: 1px solid var(--line-soft);
+  background: #f3f6fb;
   border-radius: 999px;
   padding: 5px;
 }
 
 .insights-tab {
-  border: 0;
+  border: 1px solid transparent;
   background: transparent;
-  color: #315974;
+  color: #4f6177;
   border-radius: 999px;
   min-height: 44px;
   padding: 8px 12px;
@@ -1359,11 +1361,23 @@ a:focus-visible {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+.insights-tab:hover:not(.active) {
+  color: #22354b;
+  background: rgba(37, 99, 235, 0.08);
 }
 
 .insights-tab.active {
-  background: linear-gradient(140deg, #0f92ac, #0c728a);
-  color: #f6fdff;
+  border-color: #2a5fcc;
+  background: linear-gradient(155deg, #2f6df6, #2556cf);
+  color: #f7faff;
+  box-shadow: 0 8px 16px rgba(37, 86, 207, 0.22);
 }
 
 .analytics-results {
