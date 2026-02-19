@@ -36,6 +36,42 @@ const tabs = [
   { id: "people", label: "People & Access" },
 ];
 
+function TabIcon({ tabId }) {
+  if (tabId === "capture") {
+    return (
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11Zm7 1.5a1 1 0 1 0 2 0V6h2a1 1 0 1 0 0-2h-2V2a1 1 0 1 0-2 0v2H9a1 1 0 1 0 0 2h2v2Z" />
+      </svg>
+    );
+  }
+  if (tabId === "ledger") {
+    return (
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M5 4a2 2 0 0 0-2 2v12.75C3 20 4 21 5.25 21H19a1 1 0 1 0 0-2H5.25a.25.25 0 0 1-.25-.25V18h12a4 4 0 0 0 4-4V6a2 2 0 0 0-2-2H5Zm3 4a1 1 0 0 0 0 2h8a1 1 0 1 0 0-2H8Zm0 4a1 1 0 0 0 0 2h5a1 1 0 1 0 0-2H8Z" />
+      </svg>
+    );
+  }
+  if (tabId === "recurring") {
+    return (
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M12 3a9 9 0 0 1 8.64 6.47 1 1 0 1 1-1.93.52A7 7 0 0 0 6.1 8H8a1 1 0 1 1 0 2H3.5A1.5 1.5 0 0 1 2 8.5V4a1 1 0 1 1 2 0v2.17A9 9 0 0 1 12 3Zm8.5 11a1 1 0 0 1 1 1v4.5A1.5 1.5 0 0 1 20 21h-4.5a1 1 0 1 1 0-2h1.9A7 7 0 0 0 5.3 14.01a1 1 0 0 1-1.95-.45A9 9 0 0 1 20 11.83V15a1 1 0 0 1-1.5.87V14.5Z" />
+      </svg>
+    );
+  }
+  if (tabId === "insights") {
+    return (
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M4 19a1 1 0 0 1-1-1V6a1 1 0 1 1 2 0v11h15a1 1 0 1 1 0 2H4Zm3-4.2a1 1 0 0 1-.7-1.72l2.6-2.6a1 1 0 0 1 1.4 0l1.7 1.7 3.3-3.3a1 1 0 0 1 1.41 1.41l-4 4a1 1 0 0 1-1.4 0l-1.7-1.7-1.9 1.9a1 1 0 0 1-.7.3Z" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+      <path d="M16 11a4 4 0 1 0-3.87-5h-.26A4 4 0 1 0 8 11a4 4 0 0 0 3.87 5h.26A4 4 0 1 0 16 11Zm-8 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4Zm8 8a2 2 0 1 1 0-4 2 2 0 0 1 0 4Zm0-10a2 2 0 1 1 0-4 2 2 0 0 1 0 4Zm-4 5a2 2 0 1 1 0-4 2 2 0 0 1 0 4Z" />
+    </svg>
+  );
+}
+
 const initialRegister = {
   full_name: "",
   email: "",
@@ -507,12 +543,32 @@ function PanelSkeleton({ rows = 3 }) {
   );
 }
 
-function ToastNotice({ message }) {
+function ToastNotice({ message, placement = "bottom-right" }) {
   if (!message) return null;
+  const className = placement === "top-right" ? "toast-notice top-right" : "toast-notice";
   return (
-    <div className="toast-notice" role="status" aria-live="polite">
+    <div className={className} role="status" aria-live="polite">
       {message}
     </div>
+  );
+}
+
+function EmptyState({ title, description, actionLabel, onAction }) {
+  return (
+    <section className="empty-state" role="status" aria-live="polite">
+      <div className="empty-state-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11Zm3 2.5a1 1 0 1 0 0 2h10a1 1 0 1 0 0-2H7Zm0 4a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2H7Z" />
+        </svg>
+      </div>
+      <h3>{title}</h3>
+      <p>{description}</p>
+      {actionLabel && typeof onAction === "function" && (
+        <button type="button" className="btn-ghost" onClick={onAction}>
+          {actionLabel}
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -2008,11 +2064,16 @@ function RecurringPanel({ token, user }) {
             <p className="hint">Total: {feed?.total_count ?? 0}</p>
           </div>
           {!feed?.items?.length ? (
-            <p>No recurring expenses yet.</p>
+            <EmptyState
+              title="No recurring expenses yet"
+              description="Mark recurring bills in Ledger to keep this list up to date."
+              actionLabel="Refresh"
+              onAction={loadRecurringData}
+            />
           ) : (
             <>
               <div className="table-wrap desktop-table-only">
-                <table className="analytics-table">
+                <table className="analytics-table recurring-table">
                   <thead>
                     <tr>
                       <th>Date</th>
@@ -2244,11 +2305,20 @@ function LedgerPanel({ token, user }) {
             </div>
           </div>
           {!feed?.items?.length ? (
-            <p>No expenses in this filter.</p>
+            <EmptyState
+              title="No expenses in this view"
+              description={
+                statusFilter === "all"
+                  ? "Capture a new expense from Add Expense, then come back to review it here."
+                  : `No ${statusFilter} expenses yet.`
+              }
+              actionLabel={statusFilter === "all" ? "Refresh" : "Show all expenses"}
+              onAction={statusFilter === "all" ? loadLedgerData : () => setStatusFilter("all")}
+            />
           ) : (
             <>
               <div className="table-wrap desktop-table-only">
-                <table className="analytics-table">
+                <table className="analytics-table ledger-table">
                   <thead>
                     <tr>
                       <th>Date</th>
@@ -3415,7 +3485,7 @@ export default function App() {
   return (
     <RuntimeErrorBoundary>
       <main className="app-shell">
-        {globalNotice && <div className="app-notice">{globalNotice}</div>}
+        <ToastNotice message={globalNotice} placement="top-right" />
         <Header
           user={auth.user}
           onQuickAdd={() => setQuickAddOpen(true)}
@@ -3439,7 +3509,10 @@ export default function App() {
                 className={activeTab === tab.id ? "tab active" : "tab"}
                 onClick={() => setActiveTab(tab.id)}
               >
-                {tab.label}
+                <span className="tab-icon" aria-hidden="true">
+                  <TabIcon tabId={tab.id} />
+                </span>
+                <span className="tab-label">{tab.label}</span>
               </button>
             ))}
           </aside>
@@ -3490,7 +3563,7 @@ function Header({ user, onQuickAdd, onOpenSettings, settingsActive = false, onLo
     <header className="topbar">
       <div>
         <p className="kicker">LedgerLoop</p>
-        <h2>Household Finance Workspace</h2>
+        <h2>Household Finance</h2>
       </div>
       <div className="topbar-actions">
         {user && (
