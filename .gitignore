@@ -7,8 +7,17 @@ __pycache__/
 # Local env
 .env
 .venv/
+.uv-venv/
 *.db
 
 # Node
 node_modules/
 dist/
+
+# Local research / scratch artifacts
+backend/Notebook/
+front_issue_1.jpg
+frontedn_mic_allignment.jpg
+frontend chatanalytics .jpg
+frontend_login page.jpg
+Screenshot 2026-02-12 222003.jpg
