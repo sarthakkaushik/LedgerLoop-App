@@ -702,36 +702,48 @@ function StatusPill({ status }) {
   return <span className={className}>{label}</span>;
 }
 
-function BudgetOverviewCard({ totalBudget = DEFAULT_MONTHLY_BUDGET, currentSpent = 0, currency = "INR" }) {
+function BudgetOverviewCard({
+  totalBudget = DEFAULT_MONTHLY_BUDGET,
+  currentSpent = 0,
+  currency = "INR",
+  periodMonth = null,
+  onEditBudget,
+}) {
   const parsedBudget = parseNumeric(totalBudget);
   const normalizedBudget = parsedBudget !== null && parsedBudget > 0 ? parsedBudget : DEFAULT_MONTHLY_BUDGET;
   const parsedSpent = parseNumeric(currentSpent);
   const spentValue = parsedSpent !== null && parsedSpent > 0 ? parsedSpent : 0;
   const usagePercentRaw = normalizedBudget > 0 ? (spentValue / normalizedBudget) * 100 : 0;
   const usagePercentVisual = Math.min(Math.max(usagePercentRaw, 0), 100);
+  const usagePercentRounded = Math.round(Math.max(usagePercentRaw, 0));
   const isBreached = usagePercentRaw > 100;
   const isWarning = usagePercentRaw > 80 && usagePercentRaw <= 100;
   const remainingValue = normalizedBudget - spentValue;
+  const monthLabel =
+    formatMonthYearValue(periodMonth || new Date(), {
+      monthStyle: "long",
+      separator: " ",
+    }) || "This month";
 
   const stateKey = isBreached ? "breached" : isWarning ? "warning" : "safe";
-  const stateLabel = isBreached ? "Limit breached" : isWarning ? "Near limit" : "On track";
+  const stateLabel = isBreached ? "Limit exceeded" : isWarning ? "Watch spending" : "On track";
   const paletteByState = {
     safe: {
       liquid: "#1199ab",
       surface: "#dff4f7",
-      text: "#0f7082",
+      text: "#0d3f56",
       glow: "rgba(17, 153, 171, 0.35)",
     },
     warning: {
       liquid: "#f59e0b",
       surface: "#fff1d9",
-      text: "#b96807",
+      text: "#70380a",
       glow: "rgba(245, 158, 11, 0.33)",
     },
     breached: {
       liquid: "#ef4444",
       surface: "#ffe5e8",
-      text: "#b91c1c",
+      text: "#7f1d1d",
       glow: "rgba(239, 68, 68, 0.34)",
     },
   };
@@ -740,26 +752,26 @@ function BudgetOverviewCard({ totalBudget = DEFAULT_MONTHLY_BUDGET, currentSpent
   return (
     <article className={isBreached ? "result-card budget-overview-card is-breached" : "result-card budget-overview-card"}>
       <div className="budget-overview-content">
-        <p className="budget-overview-heading">Monthly Budget</p>
-        <p className="budget-overview-status">
-          {formatCurrencyValue(spentValue, currency)} / {formatCurrencyValue(normalizedBudget, currency)} spent
-        </p>
-        <div className="budget-overview-rows" role="list" aria-label="Budget breakdown">
-          <div className="budget-overview-row" role="listitem">
-            <span>Spent</span>
-            <strong>{formatCurrencyValue(spentValue, currency)}</strong>
-          </div>
-          <div className="budget-overview-row" role="listitem">
-            <span>Budget</span>
-            <strong>{formatCurrencyValue(normalizedBudget, currency)}</strong>
-          </div>
+        <div className="budget-overview-title-row">
+          <p className="budget-overview-heading">Monthly Budget</p>
+          <span className="budget-overview-month">{monthLabel}</span>
         </div>
+        <p className="budget-overview-status">
+          {formatCurrencyValue(spentValue, currency)} spent of {formatCurrencyValue(normalizedBudget, currency)}
+        </p>
         <p className={isBreached ? "budget-overview-remaining over" : "budget-overview-remaining"}>
           {isBreached
             ? `Limit exceeded by ${formatCurrencyValue(Math.abs(remainingValue), currency)}`
             : `${formatCurrencyValue(Math.max(remainingValue, 0), currency)} remaining`}
         </p>
-        <span className={`budget-overview-state ${stateKey}`}>{stateLabel}</span>
+        <div className="budget-overview-meta">
+          <span className={`budget-overview-state ${stateKey}`}>{stateLabel}</span>
+          {typeof onEditBudget === "function" && (
+            <button type="button" className="budget-overview-link" onClick={onEditBudget}>
+              Edit budget
+            </button>
+          )}
+        </div>
       </div>
 
       <div
@@ -771,14 +783,16 @@ function BudgetOverviewCard({ totalBudget = DEFAULT_MONTHLY_BUDGET, currentSpent
           "--budget-glow": palette.glow,
         }}
       >
-        <div className="budget-orb-inner" aria-label={`Budget usage ${Math.round(usagePercentRaw)} percent`}>
+        <div className="budget-orb-inner" aria-label={`Budget usage ${usagePercentRounded} percent`}>
           <div className="budget-orb-liquid" style={{ height: `${usagePercentVisual}%` }} aria-hidden="true">
             <span className="budget-orb-wave wave-a" />
             <span className="budget-orb-wave wave-b" />
           </div>
           <div className="budget-orb-center">
-            <p className="budget-orb-value">{isBreached ? "OVER" : `${Math.round(usagePercentRaw)}%`}</p>
-            {!isBreached && <p className="budget-orb-caption">used</p>}
+            <div className="budget-orb-center-badge">
+              <p className="budget-orb-value">{isBreached ? "OVER" : `${usagePercentRounded}%`}</p>
+              {!isBreached && <p className="budget-orb-caption">used</p>}
+            </div>
           </div>
         </div>
       </div>
@@ -2363,7 +2377,7 @@ function RecurringPanel({ token, user }) {
   );
 }
 
-function LedgerPanel({ token, user }) {
+function LedgerPanel({ token, user, onOpenSettings }) {
   const [feed, setFeed] = useState(null);
   const [statusFilter, setStatusFilter] = useState("confirmed");
   const [budgetSnapshot, setBudgetSnapshot] = useState(null);
@@ -2477,7 +2491,13 @@ function LedgerPanel({ token, user }) {
   return (
     <section className="panel">
       <p className="hint">Manage and review your recent household expenses.</p>
-      <BudgetOverviewCard totalBudget={totalBudget} currentSpent={currentSpent} currency={budgetCurrency} />
+      <BudgetOverviewCard
+        totalBudget={totalBudget}
+        currentSpent={currentSpent}
+        currency={budgetCurrency}
+        periodMonth={budgetSnapshot?.period_month}
+        onEditBudget={onOpenSettings}
+      />
       {error && <p className="form-error">{error}</p>}
 
       {loading ? (
@@ -4093,7 +4113,9 @@ export default function App() {
                 onPrefilledTextConsumed={() => setCapturePrefillText("")}
               />
             )}
-            {activeTab === "ledger" && <LedgerPanel token={auth.token} user={auth.user} />}
+            {activeTab === "ledger" && (
+              <LedgerPanel token={auth.token} user={auth.user} onOpenSettings={() => setActiveTab("settings")} />
+            )}
             {activeTab === "recurring" && <RecurringPanel token={auth.token} user={auth.user} />}
             {activeTab === "insights" && <InsightsPanel token={auth.token} />}
             {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
