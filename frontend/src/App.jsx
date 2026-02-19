@@ -646,6 +646,56 @@ function SessionTransition() {
   );
 }
 
+function ExpenseAssistantResponse({ result, compact = false, showMode = false }) {
+  const assistantMessage = String(result?.assistant_message || "").trim() || "Draft entries are ready to review.";
+  const clarificationQuestions = Array.isArray(result?.clarification_questions)
+    ? result.clarification_questions
+        .map((question) => String(question || "").trim())
+        .filter(Boolean)
+    : [];
+  const needsClarification = Boolean(result?.needs_clarification);
+
+  return (
+    <article className={compact ? "result-card assistant-thread compact" : "result-card assistant-thread"}>
+      <div className="assistant-turn">
+        <span className="assistant-thread-avatar" aria-hidden="true">
+          AI
+        </span>
+        <div className="assistant-turn-body">
+          <div className="assistant-thread-header">
+            <p className="assistant-thread-name">LedgerLoop Assistant</p>
+            {needsClarification && <span className="assistant-clarify-pill">Clarification needed</span>}
+          </div>
+          <div className="assistant-bubble markdown-content">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{assistantMessage}</ReactMarkdown>
+            {needsClarification && (
+              <div className="assistant-clarification-inline">
+                <p className="assistant-clarification-title">Please confirm:</p>
+                {clarificationQuestions.length > 0 ? (
+                  <ul>
+                    {clarificationQuestions.map((question, index) => (
+                      <li key={`${question}-${index}`}>{question}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="assistant-clarification-fallback">
+                    Share one more detail so I can finish the draft.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+          {showMode && (
+            <p className="assistant-thread-meta">
+              Mode: <strong>{result?.mode === "chat" ? "Conversation" : "Smart Drafting"}</strong>
+            </p>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function QuickAddModal({
   open,
   token,
@@ -929,25 +979,7 @@ function QuickAddModal({
 
           {loading && <p className="hint subtle-loader">Reading your expense note...</p>}
 
-          {result && (
-            <article className="result-card">
-              <h4>Assistant</h4>
-              <p className="assistant-bubble">
-                {result.assistant_message || "Drafts are ready to review and save."}
-              </p>
-              <p className="hint">
-                Status:{" "}
-                <strong>{result.needs_clarification ? "Need one more detail" : "Ready to save"}</strong>
-              </p>
-              {Array.isArray(result.clarification_questions) && result.clarification_questions.length > 0 && (
-                <ul>
-                  {result.clarification_questions.map((question, index) => (
-                    <li key={`${question}-${index}`}>{question}</li>
-                  ))}
-                </ul>
-              )}
-            </article>
-          )}
+          {result && <ExpenseAssistantResponse result={result} compact />}
 
           {drafts.length > 0 && (
             <article className="result-card">
@@ -1511,37 +1543,7 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
       {loading && <p className="hint subtle-loader">Preparing your expense draft...</p>}
       {error && <p className="form-error">{error}</p>}
 
-      {result && (
-        <div className="result-grid">
-          <div className="result-card">
-            <h3>Assistant</h3>
-            {result.assistant_message ? (
-              <article className="assistant-bubble">{result.assistant_message}</article>
-            ) : (
-              <p>Draft entries are ready to review.</p>
-            )}
-            <p className="hint">
-              Mode: <strong>{result.mode === "chat" ? "Conversation" : "Smart Drafting"}</strong>
-            </p>
-          </div>
-          <div className="result-card">
-            <h3>Clarifications</h3>
-            <p>
-              Status:{" "}
-              <strong>{result.needs_clarification ? "Need one more detail" : "Ready to save"}</strong>
-            </p>
-            {result.clarification_questions.length === 0 ? (
-              <p>No questions.</p>
-            ) : (
-              <ul>
-                {result.clarification_questions.map((q, idx) => (
-                  <li key={idx}>{q}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
+      {result && <ExpenseAssistantResponse result={result} showMode />}
 
       {drafts.length > 0 && (
         <div className="result-card draft-editor">
