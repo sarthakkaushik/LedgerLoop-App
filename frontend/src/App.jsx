@@ -2914,6 +2914,10 @@ function SettingsPanel({ token, user }) {
 function DashboardPanel({ token, embedded = false }) {
   const [monthsBack, setMonthsBack] = useState(6);
   const [dashboard, setDashboard] = useState(null);
+  const [categoryFeed, setCategoryFeed] = useState({ items: [], total_count: 0 });
+  const [categoryFeedLoading, setCategoryFeedLoading] = useState(false);
+  const [categoryFeedError, setCategoryFeedError] = useState("");
+  const [expandedCategoryKey, setExpandedCategoryKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -2943,6 +2947,40 @@ function DashboardPanel({ token, embedded = false }) {
     };
   }, [monthsBack, token]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCategoryFeed() {
+      setCategoryFeedLoading(true);
+      setCategoryFeedError("");
+      try {
+        const data = await fetchExpenseFeed(token, {
+          status: "confirmed",
+          limit: 500,
+        });
+        if (!cancelled) {
+          setCategoryFeed(data);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setCategoryFeed({ items: [], total_count: 0 });
+          setCategoryFeedError(err.message);
+        }
+      } finally {
+        if (!cancelled) {
+          setCategoryFeedLoading(false);
+        }
+      }
+    }
+    loadCategoryFeed();
+    return () => {
+      cancelled = true;
+    };
+  }, [monthsBack, token]);
+
+  useEffect(() => {
+    setExpandedCategoryKey("");
+  }, [monthsBack, dashboard?.period_month]);
+
   const maxMonthlyTotal = useMemo(() => {
     if (!dashboard?.monthly_trend?.length) return 1;
     return Math.max(...dashboard.monthly_trend.map((item) => item.total), 1);
@@ -2957,6 +2995,38 @@ function DashboardPanel({ token, embedded = false }) {
     if (!dashboard?.user_split?.length) return 1;
     return Math.max(...dashboard.user_split.map((item) => item.total), 1);
   }, [dashboard]);
+
+  const categoryEntriesByKey = useMemo(() => {
+    const grouped = new Map();
+    const periodStart = String(dashboard?.period_start || "").trim();
+    const periodEnd = String(dashboard?.period_end || "").trim();
+    if (!periodStart || !periodEnd) {
+      return grouped;
+    }
+
+    const items = Array.isArray(categoryFeed?.items) ? categoryFeed.items : [];
+    for (const expense of items) {
+      const dateIncurred = String(expense?.date_incurred || "").trim();
+      if (!dateIncurred || dateIncurred < periodStart || dateIncurred > periodEnd) {
+        continue;
+      }
+      const categoryLabel = String(expense?.category || "Other").trim() || "Other";
+      const key = normalizeTaxonomyName(categoryLabel);
+      if (!key) continue;
+      if (!grouped.has(key)) {
+        grouped.set(key, []);
+      }
+      grouped.get(key).push(expense);
+    }
+
+    return grouped;
+  }, [categoryFeed, dashboard?.period_end, dashboard?.period_start]);
+
+  function handleToggleCategory(categoryName) {
+    const key = normalizeTaxonomyName(categoryName || "Other");
+    if (!key) return;
+    setExpandedCategoryKey((previous) => (previous === key ? "" : key));
+  }
 
   return (
     <section className={embedded ? "embedded-panel" : "panel"}>
@@ -3028,21 +3098,88 @@ function DashboardPanel({ token, embedded = false }) {
               {dashboard.category_split.length === 0 ? (
                 <p>No confirmed expenses this month.</p>
               ) : (
-                <div className="bar-list">
-                  {dashboard.category_split.map((item) => (
-                    <div className="bar-row" key={item.category}>
-                      <span>{item.category}</span>
-                      <div className="bar-track">
-                        <div
-                          className="bar-fill accent"
-                          style={{
-                            width: `${Math.max((item.total / maxCategoryTotal) * 100, 2)}%`,
-                          }}
-                        />
-                      </div>
-                      <strong>{formatCurrencyValue(item.total)}</strong>
-                    </div>
-                  ))}
+                <div className="category-split-list">
+                  {dashboard.category_split.map((item, index) => {
+                    const categoryLabel = String(item.category || "Other").trim() || "Other";
+                    const categoryKey = normalizeTaxonomyName(categoryLabel);
+                    const isExpanded = expandedCategoryKey === categoryKey;
+                    const categoryEntries = categoryEntriesByKey.get(categoryKey) || [];
+                    const panelId = `category-detail-${index}`;
+                    const hiddenEntriesCount = Math.max(item.count - categoryEntries.length, 0);
+
+                    return (
+                      <article
+                        key={`${categoryLabel}-${index}`}
+                        className={isExpanded ? "category-split-item expanded" : "category-split-item"}
+                      >
+                        <button
+                          type="button"
+                          className="bar-row category-bar-button"
+                          aria-expanded={isExpanded}
+                          aria-controls={panelId}
+                          onClick={() => handleToggleCategory(categoryLabel)}
+                        >
+                          <span>{categoryLabel}</span>
+                          <div className="bar-track">
+                            <div
+                              className="bar-fill accent"
+                              style={{
+                                width: `${Math.max((item.total / maxCategoryTotal) * 100, 2)}%`,
+                              }}
+                            />
+                          </div>
+                          <div className="category-bar-tail">
+                            <strong>{formatCurrencyValue(item.total)}</strong>
+                            <span className="category-chevron" aria-hidden="true">
+                              v
+                            </span>
+                          </div>
+                        </button>
+                        {isExpanded && (
+                          <div id={panelId} className="category-expense-panel">
+                            {categoryFeedLoading ? (
+                              <p className="category-expense-empty">Loading entries...</p>
+                            ) : categoryFeedError ? (
+                              <p className="category-expense-empty">{categoryFeedError}</p>
+                            ) : categoryEntries.length === 0 ? (
+                              <p className="category-expense-empty">
+                                No entries found in this month for this category.
+                              </p>
+                            ) : (
+                              <>
+                                <ul className="category-expense-list">
+                                  {categoryEntries.map((expense) => (
+                                    <li className="category-expense-item" key={expense.id}>
+                                      <div>
+                                        <p className="category-expense-title">
+                                          {expense.description ||
+                                            expense.merchant_or_item ||
+                                            "Expense entry"}
+                                        </p>
+                                        <p className="category-expense-meta">
+                                          {formatDateValue(expense.date_incurred)}
+                                          {expense.subcategory ? ` | ${expense.subcategory}` : ""}
+                                          {expense.logged_by_name ? ` | ${expense.logged_by_name}` : ""}
+                                        </p>
+                                      </div>
+                                      <strong className="category-expense-amount">
+                                        {formatCurrencyValue(expense.amount, expense.currency)}
+                                      </strong>
+                                    </li>
+                                  ))}
+                                </ul>
+                                {hiddenEntriesCount > 0 && (
+                                  <p className="category-expense-footnote">
+                                    Showing {categoryEntries.length} of {item.count} entries for this category.
+                                  </p>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </article>
