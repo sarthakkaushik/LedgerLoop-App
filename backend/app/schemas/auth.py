@@ -60,9 +60,14 @@ class HouseholdMemberResponse(BaseModel):
 class HouseholdOverviewResponse(BaseModel):
     household_id: str
     household_name: str
+    monthly_budget: float
     invite_code: str | None = None
     members: list[HouseholdMemberResponse]
 
 
 class HouseholdRenameRequest(BaseModel):
     household_name: str = Field(min_length=2, max_length=120)
+
+
+class HouseholdBudgetUpdateRequest(BaseModel):
+    monthly_budget: float = Field(gt=0, le=1_000_000_000)

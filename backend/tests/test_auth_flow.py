@@ -4,6 +4,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.api.deps import get_expense_parser
+from app.models.household import DEFAULT_MONTHLY_BUDGET
 from app.services.llm.base import ExpenseParserProvider
 from app.services.llm.types import ParseContext, ParseResult, ParsedExpense
 
@@ -88,6 +89,7 @@ async def test_register_invite_join_login_me_flow(client: AsyncClient) -> None:
     assert household_admin_res.status_code == 200
     admin_household = household_admin_res.json()
     assert admin_household["household_name"] == "Sharma Family"
+    assert admin_household["monthly_budget"] == pytest.approx(DEFAULT_MONTHLY_BUDGET)
     assert admin_household["invite_code"]
     assert len(admin_household["members"]) == 2
 
@@ -97,6 +99,7 @@ async def test_register_invite_join_login_me_flow(client: AsyncClient) -> None:
     )
     assert household_member_res.status_code == 200
     member_household = household_member_res.json()
+    assert member_household["monthly_budget"] == pytest.approx(DEFAULT_MONTHLY_BUDGET)
     assert member_household["invite_code"] is None
     assert len(member_household["members"]) == 2
 
@@ -230,6 +233,69 @@ async def test_admin_can_rename_household_and_member_cannot(client: AsyncClient)
         headers={"Authorization": f"Bearer {member_token}"},
     )
     assert member_rename_res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_can_update_household_budget_and_member_cannot(client: AsyncClient) -> None:
+    register_res = await client.post(
+        "/auth/register",
+        json={
+            "email": "budget-owner@example.com",
+            "password": "testpass123",
+            "full_name": "Budget Owner",
+            "household_name": "Budget Home",
+        },
+    )
+    assert register_res.status_code == 201
+    admin_token = register_res.json()["token"]["access_token"]
+
+    household_before_res = await client.get(
+        "/auth/household",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert household_before_res.status_code == 200
+    assert household_before_res.json()["monthly_budget"] == pytest.approx(DEFAULT_MONTHLY_BUDGET)
+
+    update_budget_res = await client.patch(
+        "/auth/household/budget",
+        json={"monthly_budget": 70000},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert update_budget_res.status_code == 200
+    assert update_budget_res.json()["monthly_budget"] == pytest.approx(70000.0)
+
+    invite_res = await client.post(
+        "/auth/invite",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert invite_res.status_code == 200
+    invite_code = invite_res.json()["invite_code"]
+
+    member_res = await client.post(
+        "/auth/join",
+        json={
+            "email": "budget-member@example.com",
+            "password": "testpass123",
+            "full_name": "Budget Member",
+            "invite_code": invite_code,
+        },
+    )
+    assert member_res.status_code == 201
+    member_token = member_res.json()["token"]["access_token"]
+
+    household_member_res = await client.get(
+        "/auth/household",
+        headers={"Authorization": f"Bearer {member_token}"},
+    )
+    assert household_member_res.status_code == 200
+    assert household_member_res.json()["monthly_budget"] == pytest.approx(70000.0)
+
+    member_update_res = await client.patch(
+        "/auth/household/budget",
+        json={"monthly_budget": 42000},
+        headers={"Authorization": f"Bearer {member_token}"},
+    )
+    assert member_update_res.status_code == 403
 
 
 @pytest.mark.asyncio

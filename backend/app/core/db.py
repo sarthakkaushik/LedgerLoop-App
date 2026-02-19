@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlmodel import SQLModel
 
 from app.core.config import get_settings
+from app.models.household import DEFAULT_MONTHLY_BUDGET
 
 settings = get_settings()
 
@@ -22,6 +23,7 @@ async def init_db() -> None:
         await conn.run_sync(SQLModel.metadata.create_all)
         await conn.run_sync(_ensure_user_is_active_column)
         await conn.run_sync(_ensure_expense_subcategory_column)
+        await conn.run_sync(_ensure_household_monthly_budget_column)
 
 
 def _ensure_user_is_active_column(sync_conn) -> None:
@@ -56,3 +58,19 @@ def _ensure_expense_subcategory_column(sync_conn) -> None:
         return
 
     sync_conn.exec_driver_sql("ALTER TABLE expenses ADD COLUMN subcategory VARCHAR(80)")
+
+
+def _ensure_household_monthly_budget_column(sync_conn) -> None:
+    inspector = inspect(sync_conn)
+    table_names = set(inspector.get_table_names())
+    if "households" not in table_names:
+        return
+
+    column_names = {column["name"] for column in inspector.get_columns("households")}
+    if "monthly_budget" in column_names:
+        return
+
+    sync_conn.exec_driver_sql(
+        "ALTER TABLE households ADD COLUMN monthly_budget FLOAT NOT NULL DEFAULT "
+        f"{DEFAULT_MONTHLY_BUDGET}"
+    )

@@ -66,6 +66,14 @@ export async function updateHouseholdName(token, householdName) {
   });
 }
 
+export async function updateHouseholdBudget(token, monthlyBudget) {
+  return apiRequest("/auth/household/budget", {
+    method: "PATCH",
+    token,
+    body: { monthly_budget: monthlyBudget },
+  });
+}
+
 export async function fetchTaxonomy(token) {
   return apiRequest("/settings/taxonomy", { token });
 }

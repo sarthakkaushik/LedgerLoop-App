@@ -23,6 +23,7 @@ import {
   parseExpenseText,
   registerUser,
   transcribeExpenseAudio,
+  updateHouseholdBudget,
   updateHouseholdName,
   updateExpenseRecurring,
   updateTaxonomyCategory,
@@ -106,7 +107,6 @@ const GLOBAL_CURRENCY_OPTIONS = [
   { symbol: "AED", code: "AED", name: "UAE Dirham" },
 ];
 const DEFAULT_MONTHLY_BUDGET = 50000;
-const MONTHLY_BUDGET_STORAGE_KEY = "expense_monthly_budget";
 
 function safeStorageGet(key) {
   try {
@@ -130,36 +130,6 @@ function safeStorageRemove(key) {
   } catch {
     // no-op: storage can be blocked in some browser contexts
   }
-}
-
-function budgetStorageKeyForHousehold(householdId) {
-  const normalized = String(householdId || "").trim();
-  return normalized ? `${MONTHLY_BUDGET_STORAGE_KEY}:${normalized}` : MONTHLY_BUDGET_STORAGE_KEY;
-}
-
-function readStoredMonthlyBudget(householdId) {
-  const scopedKey = budgetStorageKeyForHousehold(householdId);
-  const scopedValue = parseNumeric(safeStorageGet(scopedKey));
-  if (scopedValue !== null && scopedValue > 0) {
-    return scopedValue;
-  }
-  const legacyValue = parseNumeric(safeStorageGet(MONTHLY_BUDGET_STORAGE_KEY));
-  if (legacyValue !== null && legacyValue > 0) {
-    if (scopedKey !== MONTHLY_BUDGET_STORAGE_KEY) {
-      safeStorageSet(scopedKey, String(legacyValue));
-    }
-    return legacyValue;
-  }
-  return DEFAULT_MONTHLY_BUDGET;
-}
-
-function writeStoredMonthlyBudget(householdId, amount) {
-  const numeric = parseNumeric(amount);
-  if (numeric === null || numeric <= 0) return false;
-  const normalized = Number(numeric.toFixed(2));
-  const scopedKey = budgetStorageKeyForHousehold(householdId);
-  safeStorageSet(scopedKey, String(normalized));
-  return true;
 }
 
 function safeParseStoredUser(raw) {
@@ -757,7 +727,7 @@ function BudgetOverviewCard({
           <span className="budget-overview-month">{monthLabel}</span>
         </div>
         <p className="budget-overview-status">
-          {formatCurrencyValue(spentValue, currency)} spent of {formatCurrencyValue(normalizedBudget, currency)}
+          {formatCurrencyValue(spentValue, currency)} / {formatCurrencyValue(normalizedBudget, currency)}
         </p>
         <p className={isBreached ? "budget-overview-remaining over" : "budget-overview-remaining"}>
           {isBreached
@@ -2377,10 +2347,11 @@ function RecurringPanel({ token, user }) {
   );
 }
 
-function LedgerPanel({ token, user, onOpenSettings }) {
+function LedgerPanel({ token, onOpenSettings }) {
   const [feed, setFeed] = useState(null);
   const [statusFilter, setStatusFilter] = useState("confirmed");
   const [budgetSnapshot, setBudgetSnapshot] = useState(null);
+  const [totalBudget, setTotalBudget] = useState(DEFAULT_MONTHLY_BUDGET);
   const [loading, setLoading] = useState(false);
   const [deletingExpenseId, setDeletingExpenseId] = useState(null);
   const [updatingRecurringId, setUpdatingRecurringId] = useState(null);
@@ -2388,7 +2359,6 @@ function LedgerPanel({ token, user, onOpenSettings }) {
   const [expenseToDelete, setExpenseToDelete] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const householdId = String(user?.household_id || "").trim();
   const budgetCurrency = useMemo(() => {
     const item = Array.isArray(feed?.items) ? feed.items.find((entry) => String(entry?.currency || "").trim()) : null;
     return String(item?.currency || "INR").toUpperCase();
@@ -2407,19 +2377,19 @@ function LedgerPanel({ token, user, onOpenSettings }) {
       return sum + (amount !== null ? amount : 0);
     }, 0);
   }, [budgetSnapshot?.total_spend, feed?.items]);
-  const totalBudget = useMemo(() => {
-    return readStoredMonthlyBudget(householdId);
-  }, [householdId]);
 
   async function loadLedgerData() {
     setLoading(true);
     setError("");
     try {
-      const [feedData, dashboardData] = await Promise.all([
+      const [feedData, dashboardData, householdData] = await Promise.all([
         fetchExpenseFeed(token, { status: statusFilter, limit: 200 }),
         fetchDashboard(token, 6).catch(() => null),
+        fetchHousehold(token).catch(() => null),
       ]);
       setFeed(feedData);
+      const budgetNumeric = parseNumeric(householdData?.monthly_budget);
+      setTotalBudget(budgetNumeric !== null && budgetNumeric > 0 ? Number(budgetNumeric.toFixed(2)) : DEFAULT_MONTHLY_BUDGET);
       if (dashboardData) {
         setBudgetSnapshot(dashboardData);
       }
@@ -2707,6 +2677,7 @@ function SettingsPanel({ token, user, onUserUpdated }) {
   const [householdNameError, setHouseholdNameError] = useState("");
   const [householdNameMessage, setHouseholdNameMessage] = useState("");
   const [budgetInput, setBudgetInput] = useState(String(DEFAULT_MONTHLY_BUDGET));
+  const [budgetBusy, setBudgetBusy] = useState(false);
   const [budgetError, setBudgetError] = useState("");
   const [budgetMessage, setBudgetMessage] = useState("");
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -2720,15 +2691,26 @@ function SettingsPanel({ token, user, onUserUpdated }) {
   const [error, setError] = useState("");
 
   const isAdmin = user?.role === "admin";
-  const householdId = String(user?.household_id || "").trim();
   const currentHouseholdName = String(user?.household_name || "").trim();
 
   async function loadTaxonomyData() {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchTaxonomy(token);
-      setTaxonomy(data);
+      const [taxonomyData, householdData] = await Promise.all([
+        fetchTaxonomy(token),
+        fetchHousehold(token).catch(() => null),
+      ]);
+      setTaxonomy(taxonomyData);
+      const budgetNumeric = parseNumeric(householdData?.monthly_budget);
+      setBudgetInput(
+        String(
+          budgetNumeric !== null && budgetNumeric > 0
+            ? Number(budgetNumeric.toFixed(2))
+            : DEFAULT_MONTHLY_BUDGET
+        )
+      );
+      setBudgetError("");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -2739,11 +2721,6 @@ function SettingsPanel({ token, user, onUserUpdated }) {
   useEffect(() => {
     loadTaxonomyData();
   }, [token]);
-
-  useEffect(() => {
-    const budget = readStoredMonthlyBudget(householdId);
-    setBudgetInput(String(budget));
-  }, [householdId]);
 
   useEffect(() => {
     setHouseholdNameInput(currentHouseholdName);
@@ -2793,35 +2770,57 @@ function SettingsPanel({ token, user, onUserUpdated }) {
     }
   }
 
-  function handleSaveMonthlyBudget() {
+  async function handleSaveMonthlyBudget() {
+    if (!isAdmin) {
+      setBudgetError("Only admin can update monthly budget.");
+      setBudgetMessage("");
+      return;
+    }
     const numeric = parseNumeric(budgetInput);
     if (numeric === null || numeric <= 0) {
       setBudgetError("Enter a valid monthly budget greater than 0.");
       setBudgetMessage("");
       return;
     }
-    const normalized = Number(numeric.toFixed(2));
-    const saved = writeStoredMonthlyBudget(householdId, normalized);
-    if (!saved) {
-      setBudgetError("Could not save monthly budget.");
-      setBudgetMessage("");
-      return;
-    }
-    setBudgetInput(String(normalized));
+    setBudgetBusy(true);
     setBudgetError("");
-    setBudgetMessage(`Monthly budget saved: ${formatCurrencyValue(normalized, "INR")}.`);
+    setBudgetMessage("");
+    try {
+      const normalized = Number(numeric.toFixed(2));
+      const household = await updateHouseholdBudget(token, normalized);
+      const savedBudget = parseNumeric(household?.monthly_budget);
+      const nextBudget =
+        savedBudget !== null && savedBudget > 0 ? Number(savedBudget.toFixed(2)) : normalized;
+      setBudgetInput(String(nextBudget));
+      setBudgetMessage(`Monthly budget saved: ${formatCurrencyValue(nextBudget, "INR")}.`);
+    } catch (err) {
+      setBudgetError(err.message);
+    } finally {
+      setBudgetBusy(false);
+    }
   }
 
-  function handleResetMonthlyBudget() {
-    const saved = writeStoredMonthlyBudget(householdId, DEFAULT_MONTHLY_BUDGET);
-    if (!saved) {
-      setBudgetError("Could not reset monthly budget.");
+  async function handleResetMonthlyBudget() {
+    if (!isAdmin) {
+      setBudgetError("Only admin can reset monthly budget.");
       setBudgetMessage("");
       return;
     }
-    setBudgetInput(String(DEFAULT_MONTHLY_BUDGET));
+    setBudgetBusy(true);
     setBudgetError("");
-    setBudgetMessage(`Monthly budget reset to ${formatCurrencyValue(DEFAULT_MONTHLY_BUDGET, "INR")}.`);
+    setBudgetMessage("");
+    try {
+      const household = await updateHouseholdBudget(token, DEFAULT_MONTHLY_BUDGET);
+      const savedBudget = parseNumeric(household?.monthly_budget);
+      const nextBudget =
+        savedBudget !== null && savedBudget > 0 ? Number(savedBudget.toFixed(2)) : DEFAULT_MONTHLY_BUDGET;
+      setBudgetInput(String(nextBudget));
+      setBudgetMessage(`Monthly budget reset to ${formatCurrencyValue(nextBudget, "INR")}.`);
+    } catch (err) {
+      setBudgetError(err.message);
+    } finally {
+      setBudgetBusy(false);
+    }
   }
 
   async function handleCreateCategory() {
@@ -2969,7 +2968,7 @@ function SettingsPanel({ token, user, onUserUpdated }) {
           className="btn-ghost"
           type="button"
           onClick={loadTaxonomyData}
-          disabled={loading || taxonomyBusy || householdNameBusy}
+          disabled={loading || taxonomyBusy || householdNameBusy || budgetBusy}
         >
           Refresh
         </button>
@@ -3020,10 +3019,10 @@ function SettingsPanel({ token, user, onUserUpdated }) {
       <article className="result-card budget-settings-card">
         <div className="row draft-header">
           <h3>Monthly Budget</h3>
-          <span className="tool-chip">This browser</span>
+          <span className="tool-chip">Shared household</span>
         </div>
         <p className="hint">
-          Set the monthly cap used in the Ledger budget overview. This is saved per household on this device.
+          Set the monthly cap used in the Ledger budget overview. This is shared across all members in this household.
         </p>
         <div className="budget-settings-row">
           <label className="budget-settings-field">
@@ -3041,16 +3040,27 @@ function SettingsPanel({ token, user, onUserUpdated }) {
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  handleSaveMonthlyBudget();
+                  void handleSaveMonthlyBudget();
                 }
               }}
+              disabled={!isAdmin || budgetBusy}
             />
           </label>
           <div className="budget-settings-actions">
-            <button type="button" className="btn-main" onClick={handleSaveMonthlyBudget}>
-              Save Budget
+            <button
+              type="button"
+              className="btn-main"
+              onClick={() => void handleSaveMonthlyBudget()}
+              disabled={!isAdmin || budgetBusy}
+            >
+              {budgetBusy ? "Saving..." : "Save Budget"}
             </button>
-            <button type="button" className="btn-ghost" onClick={handleResetMonthlyBudget}>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => void handleResetMonthlyBudget()}
+              disabled={!isAdmin || budgetBusy}
+            >
               Reset Default
             </button>
           </div>
@@ -4114,7 +4124,7 @@ export default function App() {
               />
             )}
             {activeTab === "ledger" && (
-              <LedgerPanel token={auth.token} user={auth.user} onOpenSettings={() => setActiveTab("settings")} />
+              <LedgerPanel token={auth.token} onOpenSettings={() => setActiveTab("settings")} />
             )}
             {activeTab === "recurring" && <RecurringPanel token={auth.token} user={auth.user} />}
             {activeTab === "insights" && <InsightsPanel token={auth.token} />}

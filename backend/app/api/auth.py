@@ -14,6 +14,7 @@ from app.models.user import User, UserRole
 from app.schemas.auth import (
     AuthResponse,
     DeleteMemberResponse,
+    HouseholdBudgetUpdateRequest,
     HouseholdMemberResponse,
     HouseholdOverviewResponse,
     HouseholdRenameRequest,
@@ -310,6 +311,7 @@ async def household_overview(
     return HouseholdOverviewResponse(
         household_id=str(household.id),
         household_name=household.name,
+        monthly_budget=float(household.monthly_budget),
         invite_code=household.invite_code if current_user.role == UserRole.ADMIN else None,
         members=[
             HouseholdMemberResponse(
@@ -352,3 +354,26 @@ async def update_household_name(
     await session.commit()
 
     return await to_user_response(session, current_user)
+
+
+@router.patch("/household/budget", response_model=HouseholdOverviewResponse)
+async def update_household_budget(
+    payload: HouseholdBudgetUpdateRequest,
+    current_user: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session),
+) -> HouseholdOverviewResponse:
+    household_result = await session.execute(
+        select(Household).where(Household.id == current_user.household_id)
+    )
+    household = household_result.scalar_one_or_none()
+    if not household:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Household not found",
+        )
+
+    household.monthly_budget = float(round(payload.monthly_budget, 2))
+    session.add(household)
+    await session.commit()
+
+    return await household_overview(current_user=current_user, session=session)
