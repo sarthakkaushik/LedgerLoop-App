@@ -2142,12 +2142,6 @@ function LedgerPanel({ token, user }) {
 
   return (
     <section className="panel">
-      <div className="dashboard-header">
-        <h2>Ledger</h2>
-        <button className="btn-ghost" type="button" onClick={loadLedgerData} disabled={loading}>
-          Refresh
-        </button>
-      </div>
       <p className="hint">Review logged expenses, export CSV, and clean incorrect entries.</p>
       {error && <p className="form-error">{error}</p>}
       {message && <p className="form-ok">{message}</p>}
@@ -2157,8 +2151,10 @@ function LedgerPanel({ token, user }) {
       ) : (
         <article className="result-card household-ledger">
           <div className="row draft-header">
-            <h3>Expense Ledger</h3>
             <div className="member-actions">
+              <button className="btn-ghost" type="button" onClick={loadLedgerData} disabled={loading}>
+                Refresh
+              </button>
               <label>
                 Status
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
