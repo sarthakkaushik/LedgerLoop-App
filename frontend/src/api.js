@@ -58,6 +58,14 @@ export async function fetchHousehold(token) {
   return apiRequest("/auth/household", { token });
 }
 
+export async function updateHouseholdName(token, householdName) {
+  return apiRequest("/auth/household/name", {
+    method: "PATCH",
+    token,
+    body: { household_name: householdName },
+  });
+}
+
 export async function fetchTaxonomy(token) {
   return apiRequest("/settings/taxonomy", { token });
 }

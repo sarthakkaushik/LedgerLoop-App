@@ -25,6 +25,7 @@ class UserResponse(BaseModel):
     email: EmailStr
     full_name: str
     household_id: str
+    household_name: str
     role: str
 
 
@@ -61,3 +62,7 @@ class HouseholdOverviewResponse(BaseModel):
     household_name: str
     invite_code: str | None = None
     members: list[HouseholdMemberResponse]
+
+
+class HouseholdRenameRequest(BaseModel):
+    household_name: str = Field(min_length=2, max_length=120)

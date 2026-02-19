@@ -16,6 +16,7 @@ from app.schemas.auth import (
     DeleteMemberResponse,
     HouseholdMemberResponse,
     HouseholdOverviewResponse,
+    HouseholdRenameRequest,
     InviteResponse,
     JoinRequest,
     LoginRequest,
@@ -28,12 +29,22 @@ from app.services.taxonomy_service import seed_default_household_taxonomy
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def to_user_response(user: User) -> UserResponse:
+async def to_user_response(session: AsyncSession, user: User) -> UserResponse:
+    household_result = await session.execute(
+        select(Household.name).where(Household.id == user.household_id)
+    )
+    household_name = household_result.scalar_one_or_none()
+    if not household_name:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Household not found",
+        )
     return UserResponse(
         id=str(user.id),
         email=user.email,
         full_name=user.full_name,
         household_id=str(user.household_id),
+        household_name=household_name,
         role=user.role.value if hasattr(user.role, "value") else str(user.role),
     )
 
@@ -110,7 +121,10 @@ async def register(
     await session.refresh(user)
 
     token = create_access_token(str(user.id))
-    return AuthResponse(token=TokenResponse(access_token=token), user=to_user_response(user))
+    return AuthResponse(
+        token=TokenResponse(access_token=token),
+        user=await to_user_response(session, user),
+    )
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -120,7 +134,10 @@ async def login(
 ) -> AuthResponse:
     user = await authenticate_user(session, payload.email, payload.password)
     token = create_access_token(str(user.id))
-    return AuthResponse(token=TokenResponse(access_token=token), user=to_user_response(user))
+    return AuthResponse(
+        token=TokenResponse(access_token=token),
+        user=await to_user_response(session, user),
+    )
 
 
 @router.post("/token", response_model=TokenResponse)
@@ -197,7 +214,10 @@ async def join_household(
     await session.refresh(user)
 
     token = create_access_token(str(user.id))
-    return AuthResponse(token=TokenResponse(access_token=token), user=to_user_response(user))
+    return AuthResponse(
+        token=TokenResponse(access_token=token),
+        user=await to_user_response(session, user),
+    )
 
 
 @router.delete("/members/{member_id}", response_model=DeleteMemberResponse)
@@ -255,8 +275,11 @@ async def delete_household_member(
 
 
 @router.get("/me", response_model=UserResponse)
-async def me(current_user: User = Depends(get_current_user)) -> UserResponse:
-    return to_user_response(current_user)
+async def me(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> UserResponse:
+    return await to_user_response(session, current_user)
 
 
 @router.get("/household", response_model=HouseholdOverviewResponse)
@@ -299,3 +322,33 @@ async def household_overview(
             for member in members
         ],
     )
+
+
+@router.patch("/household/name", response_model=UserResponse)
+async def update_household_name(
+    payload: HouseholdRenameRequest,
+    current_user: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session),
+) -> UserResponse:
+    household_result = await session.execute(
+        select(Household).where(Household.id == current_user.household_id)
+    )
+    household = household_result.scalar_one_or_none()
+    if not household:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Household not found",
+        )
+
+    next_name = payload.household_name.strip()
+    if not next_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Household name cannot be empty",
+        )
+
+    household.name = next_name
+    session.add(household)
+    await session.commit()
+
+    return await to_user_response(session, current_user)

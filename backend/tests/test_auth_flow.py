@@ -177,6 +177,62 @@ async def test_non_admin_cannot_delete_member(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_can_rename_household_and_member_cannot(client: AsyncClient) -> None:
+    register_res = await client.post(
+        "/auth/register",
+        json={
+            "email": "rename-owner@example.com",
+            "password": "testpass123",
+            "full_name": "Rename Owner",
+            "household_name": "Starter Home",
+        },
+    )
+    assert register_res.status_code == 201
+    admin_token = register_res.json()["token"]["access_token"]
+
+    rename_res = await client.patch(
+        "/auth/household/name",
+        json={"household_name": "Updated Home"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert rename_res.status_code == 200
+    assert rename_res.json()["household_name"] == "Updated Home"
+
+    household_res = await client.get(
+        "/auth/household",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert household_res.status_code == 200
+    assert household_res.json()["household_name"] == "Updated Home"
+
+    invite_res = await client.post(
+        "/auth/invite",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert invite_res.status_code == 200
+    invite_code = invite_res.json()["invite_code"]
+
+    member_res = await client.post(
+        "/auth/join",
+        json={
+            "email": "rename-member@example.com",
+            "password": "testpass123",
+            "full_name": "Rename Member",
+            "invite_code": invite_code,
+        },
+    )
+    assert member_res.status_code == 201
+    member_token = member_res.json()["token"]["access_token"]
+
+    member_rename_res = await client.patch(
+        "/auth/household/name",
+        json={"household_name": "Member Rename Attempt"},
+        headers={"Authorization": f"Bearer {member_token}"},
+    )
+    assert member_rename_res.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_admin_can_deactivate_member_even_with_logged_expenses(client: AsyncClient) -> None:
     from app.main import app
 

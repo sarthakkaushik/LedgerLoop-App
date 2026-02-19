@@ -23,6 +23,7 @@ import {
   parseExpenseText,
   registerUser,
   transcribeExpenseAudio,
+  updateHouseholdName,
   updateExpenseRecurring,
   updateTaxonomyCategory,
   updateTaxonomySubcategory,
@@ -104,6 +105,8 @@ const GLOBAL_CURRENCY_OPTIONS = [
   { symbol: YEN_SYMBOL, code: "JPY", name: "Japanese Yen" },
   { symbol: "AED", code: "AED", name: "UAE Dirham" },
 ];
+const DEFAULT_MONTHLY_BUDGET = 50000;
+const MONTHLY_BUDGET_STORAGE_KEY = "expense_monthly_budget";
 
 function safeStorageGet(key) {
   try {
@@ -127,6 +130,36 @@ function safeStorageRemove(key) {
   } catch {
     // no-op: storage can be blocked in some browser contexts
   }
+}
+
+function budgetStorageKeyForHousehold(householdId) {
+  const normalized = String(householdId || "").trim();
+  return normalized ? `${MONTHLY_BUDGET_STORAGE_KEY}:${normalized}` : MONTHLY_BUDGET_STORAGE_KEY;
+}
+
+function readStoredMonthlyBudget(householdId) {
+  const scopedKey = budgetStorageKeyForHousehold(householdId);
+  const scopedValue = parseNumeric(safeStorageGet(scopedKey));
+  if (scopedValue !== null && scopedValue > 0) {
+    return scopedValue;
+  }
+  const legacyValue = parseNumeric(safeStorageGet(MONTHLY_BUDGET_STORAGE_KEY));
+  if (legacyValue !== null && legacyValue > 0) {
+    if (scopedKey !== MONTHLY_BUDGET_STORAGE_KEY) {
+      safeStorageSet(scopedKey, String(legacyValue));
+    }
+    return legacyValue;
+  }
+  return DEFAULT_MONTHLY_BUDGET;
+}
+
+function writeStoredMonthlyBudget(householdId, amount) {
+  const numeric = parseNumeric(amount);
+  if (numeric === null || numeric <= 0) return false;
+  const normalized = Number(numeric.toFixed(2));
+  const scopedKey = budgetStorageKeyForHousehold(householdId);
+  safeStorageSet(scopedKey, String(normalized));
+  return true;
 }
 
 function safeParseStoredUser(raw) {
@@ -606,6 +639,22 @@ function TrashIcon() {
   );
 }
 
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+      <path d="M11 4a1 1 0 1 1 2 0v7h7a1 1 0 1 1 0 2h-7v7a1 1 0 1 1-2 0v-7H4a1 1 0 1 1 0-2h7V4Z" />
+    </svg>
+  );
+}
+
+function HomeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+      <path d="M11.35 3.53a1 1 0 0 1 1.3 0l8 6.75a1 1 0 0 1-1.3 1.53L19 11.53V19a2 2 0 0 1-2 2h-3.5a1 1 0 0 1-1-1v-4h-1v4a1 1 0 0 1-1 1H7a2 2 0 0 1-2-2v-7.47l-.35.28a1 1 0 1 1-1.3-1.53l8-6.75ZM7 9.84V19h2.5v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v4H17V9.84l-5-4.22-5 4.22Z" />
+    </svg>
+  );
+}
+
 function RecurringSwitch({ checked, disabled = false, onToggle, label }) {
   return (
     <button
@@ -622,6 +671,23 @@ function RecurringSwitch({ checked, disabled = false, onToggle, label }) {
   );
 }
 
+function MiniDeactivateToggle({ onClick, label, disabled = false }) {
+  return (
+    <button
+      type="button"
+      className="mini-deactivate-toggle on"
+      role="switch"
+      aria-checked="true"
+      aria-label={label}
+      title="Deactivate"
+      onClick={onClick}
+      disabled={disabled}
+    >
+      <span className="mini-deactivate-thumb" />
+    </button>
+  );
+}
+
 function StatusPill({ status }) {
   const normalized = String(status || "")
     .trim()
@@ -634,6 +700,90 @@ function StatusPill({ status }) {
     className += " draft";
   }
   return <span className={className}>{label}</span>;
+}
+
+function BudgetOverviewCard({ totalBudget = DEFAULT_MONTHLY_BUDGET, currentSpent = 0, currency = "INR" }) {
+  const parsedBudget = parseNumeric(totalBudget);
+  const normalizedBudget = parsedBudget !== null && parsedBudget > 0 ? parsedBudget : DEFAULT_MONTHLY_BUDGET;
+  const parsedSpent = parseNumeric(currentSpent);
+  const spentValue = parsedSpent !== null && parsedSpent > 0 ? parsedSpent : 0;
+  const usagePercentRaw = normalizedBudget > 0 ? (spentValue / normalizedBudget) * 100 : 0;
+  const usagePercentVisual = Math.min(Math.max(usagePercentRaw, 0), 100);
+  const isBreached = usagePercentRaw > 100;
+  const isWarning = usagePercentRaw > 80 && usagePercentRaw <= 100;
+  const remainingValue = normalizedBudget - spentValue;
+
+  const stateKey = isBreached ? "breached" : isWarning ? "warning" : "safe";
+  const stateLabel = isBreached ? "Limit breached" : isWarning ? "Near limit" : "On track";
+  const paletteByState = {
+    safe: {
+      liquid: "#1199ab",
+      surface: "#dff4f7",
+      text: "#0f7082",
+      glow: "rgba(17, 153, 171, 0.35)",
+    },
+    warning: {
+      liquid: "#f59e0b",
+      surface: "#fff1d9",
+      text: "#b96807",
+      glow: "rgba(245, 158, 11, 0.33)",
+    },
+    breached: {
+      liquid: "#ef4444",
+      surface: "#ffe5e8",
+      text: "#b91c1c",
+      glow: "rgba(239, 68, 68, 0.34)",
+    },
+  };
+  const palette = paletteByState[stateKey];
+
+  return (
+    <article className={isBreached ? "result-card budget-overview-card is-breached" : "result-card budget-overview-card"}>
+      <div className="budget-overview-content">
+        <p className="budget-overview-heading">Monthly Budget</p>
+        <p className="budget-overview-status">
+          {formatCurrencyValue(spentValue, currency)} / {formatCurrencyValue(normalizedBudget, currency)} spent
+        </p>
+        <div className="budget-overview-rows" role="list" aria-label="Budget breakdown">
+          <div className="budget-overview-row" role="listitem">
+            <span>Spent</span>
+            <strong>{formatCurrencyValue(spentValue, currency)}</strong>
+          </div>
+          <div className="budget-overview-row" role="listitem">
+            <span>Budget</span>
+            <strong>{formatCurrencyValue(normalizedBudget, currency)}</strong>
+          </div>
+        </div>
+        <p className={isBreached ? "budget-overview-remaining over" : "budget-overview-remaining"}>
+          {isBreached
+            ? `Limit exceeded by ${formatCurrencyValue(Math.abs(remainingValue), currency)}`
+            : `${formatCurrencyValue(Math.max(remainingValue, 0), currency)} remaining`}
+        </p>
+        <span className={`budget-overview-state ${stateKey}`}>{stateLabel}</span>
+      </div>
+
+      <div
+        className="budget-orb-shell"
+        style={{
+          "--budget-liquid": palette.liquid,
+          "--budget-surface": palette.surface,
+          "--budget-ink": palette.text,
+          "--budget-glow": palette.glow,
+        }}
+      >
+        <div className="budget-orb-inner" aria-label={`Budget usage ${Math.round(usagePercentRaw)} percent`}>
+          <div className="budget-orb-liquid" style={{ height: `${usagePercentVisual}%` }} aria-hidden="true">
+            <span className="budget-orb-wave wave-a" />
+            <span className="budget-orb-wave wave-b" />
+          </div>
+          <div className="budget-orb-center">
+            <p className="budget-orb-value">{isBreached ? "OVER" : `${Math.round(usagePercentRaw)}%`}</p>
+            {!isBreached && <p className="budget-orb-caption">used</p>}
+          </div>
+        </div>
+      </div>
+    </article>
+  );
 }
 
 function SessionTransition() {
@@ -2216,6 +2366,7 @@ function RecurringPanel({ token, user }) {
 function LedgerPanel({ token, user }) {
   const [feed, setFeed] = useState(null);
   const [statusFilter, setStatusFilter] = useState("confirmed");
+  const [budgetSnapshot, setBudgetSnapshot] = useState(null);
   const [loading, setLoading] = useState(false);
   const [deletingExpenseId, setDeletingExpenseId] = useState(null);
   const [updatingRecurringId, setUpdatingRecurringId] = useState(null);
@@ -2223,13 +2374,41 @@ function LedgerPanel({ token, user }) {
   const [expenseToDelete, setExpenseToDelete] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const householdId = String(user?.household_id || "").trim();
+  const budgetCurrency = useMemo(() => {
+    const item = Array.isArray(feed?.items) ? feed.items.find((entry) => String(entry?.currency || "").trim()) : null;
+    return String(item?.currency || "INR").toUpperCase();
+  }, [feed?.items]);
+  const currentSpent = useMemo(() => {
+    const dashboardSpend = parseNumeric(budgetSnapshot?.total_spend);
+    if (dashboardSpend !== null && dashboardSpend >= 0) {
+      return dashboardSpend;
+    }
+    const items = Array.isArray(feed?.items) ? feed.items : [];
+    return items.reduce((sum, item) => {
+      if (String(item?.status || "").trim().toLowerCase() !== "confirmed") {
+        return sum;
+      }
+      const amount = parseNumeric(item?.amount);
+      return sum + (amount !== null ? amount : 0);
+    }, 0);
+  }, [budgetSnapshot?.total_spend, feed?.items]);
+  const totalBudget = useMemo(() => {
+    return readStoredMonthlyBudget(householdId);
+  }, [householdId]);
 
   async function loadLedgerData() {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchExpenseFeed(token, { status: statusFilter, limit: 200 });
-      setFeed(data);
+      const [feedData, dashboardData] = await Promise.all([
+        fetchExpenseFeed(token, { status: statusFilter, limit: 200 }),
+        fetchDashboard(token, 6).catch(() => null),
+      ]);
+      setFeed(feedData);
+      if (dashboardData) {
+        setBudgetSnapshot(dashboardData);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -2298,6 +2477,7 @@ function LedgerPanel({ token, user }) {
   return (
     <section className="panel">
       <p className="hint">Manage and review your recent household expenses.</p>
+      <BudgetOverviewCard totalBudget={totalBudget} currentSpent={currentSpent} currency={budgetCurrency} />
       {error && <p className="form-error">{error}</p>}
 
       {loading ? (
@@ -2498,10 +2678,17 @@ function LedgerPanel({ token, user }) {
   );
 }
 
-function SettingsPanel({ token, user }) {
+function SettingsPanel({ token, user, onUserUpdated }) {
   const [taxonomy, setTaxonomy] = useState({ categories: [] });
   const [loading, setLoading] = useState(false);
   const [taxonomyBusy, setTaxonomyBusy] = useState(false);
+  const [householdNameInput, setHouseholdNameInput] = useState("");
+  const [householdNameBusy, setHouseholdNameBusy] = useState(false);
+  const [householdNameError, setHouseholdNameError] = useState("");
+  const [householdNameMessage, setHouseholdNameMessage] = useState("");
+  const [budgetInput, setBudgetInput] = useState(String(DEFAULT_MONTHLY_BUDGET));
+  const [budgetError, setBudgetError] = useState("");
+  const [budgetMessage, setBudgetMessage] = useState("");
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newSubcategoryByCategory, setNewSubcategoryByCategory] = useState({});
   const [editingCategoryId, setEditingCategoryId] = useState(null);
@@ -2513,6 +2700,8 @@ function SettingsPanel({ token, user }) {
   const [error, setError] = useState("");
 
   const isAdmin = user?.role === "admin";
+  const householdId = String(user?.household_id || "").trim();
+  const currentHouseholdName = String(user?.household_name || "").trim();
 
   async function loadTaxonomyData() {
     setLoading(true);
@@ -2531,13 +2720,88 @@ function SettingsPanel({ token, user }) {
     loadTaxonomyData();
   }, [token]);
 
+  useEffect(() => {
+    const budget = readStoredMonthlyBudget(householdId);
+    setBudgetInput(String(budget));
+  }, [householdId]);
+
+  useEffect(() => {
+    setHouseholdNameInput(currentHouseholdName);
+  }, [currentHouseholdName]);
+
   const taxonomyCategories = useMemo(
     () => (Array.isArray(taxonomy?.categories) ? taxonomy.categories : []),
     [taxonomy]
   );
 
+  const budgetPreviewValue = useMemo(() => {
+    const numeric = parseNumeric(budgetInput);
+    if (numeric === null || numeric <= 0) return DEFAULT_MONTHLY_BUDGET;
+    return Number(numeric.toFixed(2));
+  }, [budgetInput]);
+
   function updateSubcategoryInput(categoryId, value) {
     setNewSubcategoryByCategory((prev) => ({ ...prev, [categoryId]: value }));
+  }
+
+  async function handleSaveHouseholdName() {
+    if (!isAdmin) {
+      setHouseholdNameError("Only admin can rename household.");
+      setHouseholdNameMessage("");
+      return;
+    }
+    const nextName = householdNameInput.trim();
+    if (nextName.length < 2) {
+      setHouseholdNameError("Household name must be at least 2 characters.");
+      setHouseholdNameMessage("");
+      return;
+    }
+    setHouseholdNameBusy(true);
+    setHouseholdNameError("");
+    setHouseholdNameMessage("");
+    try {
+      const updatedUser = await updateHouseholdName(token, nextName);
+      if (typeof onUserUpdated === "function") {
+        onUserUpdated(updatedUser);
+      }
+      setHouseholdNameInput(String(updatedUser?.household_name || nextName));
+      setHouseholdNameMessage(`Household name updated to "${String(updatedUser?.household_name || nextName)}".`);
+    } catch (err) {
+      setHouseholdNameError(err.message);
+    } finally {
+      setHouseholdNameBusy(false);
+    }
+  }
+
+  function handleSaveMonthlyBudget() {
+    const numeric = parseNumeric(budgetInput);
+    if (numeric === null || numeric <= 0) {
+      setBudgetError("Enter a valid monthly budget greater than 0.");
+      setBudgetMessage("");
+      return;
+    }
+    const normalized = Number(numeric.toFixed(2));
+    const saved = writeStoredMonthlyBudget(householdId, normalized);
+    if (!saved) {
+      setBudgetError("Could not save monthly budget.");
+      setBudgetMessage("");
+      return;
+    }
+    setBudgetInput(String(normalized));
+    setBudgetError("");
+    setBudgetMessage(`Monthly budget saved: ${formatCurrencyValue(normalized, "INR")}.`);
+  }
+
+  function handleResetMonthlyBudget() {
+    const saved = writeStoredMonthlyBudget(householdId, DEFAULT_MONTHLY_BUDGET);
+    if (!saved) {
+      setBudgetError("Could not reset monthly budget.");
+      setBudgetMessage("");
+      return;
+    }
+    setBudgetInput(String(DEFAULT_MONTHLY_BUDGET));
+    setBudgetError("");
+    setBudgetMessage(`Monthly budget reset to ${formatCurrencyValue(DEFAULT_MONTHLY_BUDGET, "INR")}.`);
   }
 
   async function handleCreateCategory() {
@@ -2680,20 +2944,101 @@ function SettingsPanel({ token, user }) {
 
   return (
     <section className="panel">
-      <div className="dashboard-header">
-        <h2>Settings</h2>
+      <div className="panel-action-row">
         <button
           className="btn-ghost"
           type="button"
           onClick={loadTaxonomyData}
-          disabled={loading || taxonomyBusy}
+          disabled={loading || taxonomyBusy || householdNameBusy}
         >
           Refresh
         </button>
       </div>
-      <p className="hint">Configure categories used during AI expense capture and review.</p>
+      <p className="hint">Configure monthly budget and categories used during AI expense capture and review.</p>
       {error && <p className="form-error">{error}</p>}
       {message && <p className="form-ok">{message}</p>}
+      <article className="result-card household-name-card">
+        <div className="row draft-header">
+          <h3>Household Name</h3>
+          <span className="tool-chip">{isAdmin ? "Admin" : "Read only"}</span>
+        </div>
+        <div className="household-name-row">
+          <label className="household-name-field">
+            Name
+            <input
+              value={householdNameInput}
+              onChange={(e) => {
+                setHouseholdNameInput(e.target.value);
+                setHouseholdNameError("");
+                setHouseholdNameMessage("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void handleSaveHouseholdName();
+                }
+              }}
+              maxLength={120}
+              disabled={!isAdmin || householdNameBusy}
+            />
+          </label>
+          {isAdmin && (
+            <div className="household-name-actions">
+              <button type="button" className="btn-main" onClick={() => void handleSaveHouseholdName()}>
+                {householdNameBusy ? "Saving..." : "Save Name"}
+              </button>
+            </div>
+          )}
+        </div>
+        <p className="household-name-preview">
+          <HomeIcon />
+          <span>{String(householdNameInput || currentHouseholdName || "My Home").trim()}</span>
+        </p>
+        {householdNameError && <p className="form-error">{householdNameError}</p>}
+        {householdNameMessage && <p className="form-ok">{householdNameMessage}</p>}
+      </article>
+      <article className="result-card budget-settings-card">
+        <div className="row draft-header">
+          <h3>Monthly Budget</h3>
+          <span className="tool-chip">This browser</span>
+        </div>
+        <p className="hint">
+          Set the monthly cap used in the Ledger budget overview. This is saved per household on this device.
+        </p>
+        <div className="budget-settings-row">
+          <label className="budget-settings-field">
+            Budget Amount (INR)
+            <input
+              type="number"
+              min="1"
+              step="100"
+              value={budgetInput}
+              onChange={(e) => {
+                setBudgetInput(e.target.value);
+                setBudgetError("");
+                setBudgetMessage("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleSaveMonthlyBudget();
+                }
+              }}
+            />
+          </label>
+          <div className="budget-settings-actions">
+            <button type="button" className="btn-main" onClick={handleSaveMonthlyBudget}>
+              Save Budget
+            </button>
+            <button type="button" className="btn-ghost" onClick={handleResetMonthlyBudget}>
+              Reset Default
+            </button>
+          </div>
+        </div>
+        <p className="budget-settings-preview">Preview: {formatCurrencyValue(budgetPreviewValue, "INR")}</p>
+        {budgetError && <p className="form-error">{budgetError}</p>}
+        {budgetMessage && <p className="form-ok">{budgetMessage}</p>}
+      </article>
 
       {loading ? (
         <PanelSkeleton rows={6} />
@@ -2781,14 +3126,11 @@ function SettingsPanel({ token, user }) {
                           >
                             Rename
                           </button>
-                          <button
-                            type="button"
-                            className="btn-danger"
+                          <MiniDeactivateToggle
                             onClick={() => setDeactivateTarget({ type: "category", category })}
                             disabled={taxonomyBusy}
-                          >
-                            Deactivate
-                          </button>
+                            label={`Deactivate category ${category.name}`}
+                          />
                         </div>
                       </>
                     )}
@@ -2847,16 +3189,13 @@ function SettingsPanel({ token, user }) {
                                 >
                                   Rename
                                 </button>
-                                <button
-                                  type="button"
-                                  className="btn-danger"
+                                <MiniDeactivateToggle
                                   onClick={() =>
                                     setDeactivateTarget({ type: "subcategory", category, subcategory })
                                   }
                                   disabled={taxonomyBusy}
-                                >
-                                  Deactivate
-                                </button>
+                                  label={`Deactivate subcategory ${subcategory.name}`}
+                                />
                               </div>
                             </>
                           )}
@@ -2874,11 +3213,14 @@ function SettingsPanel({ token, user }) {
                     />
                     <button
                       type="button"
-                      className="btn-ghost"
+                      className="icon-plus-button"
                       onClick={() => handleCreateSubcategory(category)}
+                      aria-label={`Add subcategory under ${category.name}`}
+                      title={`Add subcategory under ${category.name}`}
                       disabled={taxonomyBusy || !String(newSubcategoryByCategory[category.id] || "").trim()}
                     >
-                      Add Subcategory
+                      <PlusIcon />
+                      <span className="sr-only">Add subcategory</span>
                     </button>
                   </div>
                 </article>
@@ -3626,6 +3968,29 @@ export default function App() {
   }, [auth]);
 
   useEffect(() => {
+    if (!auth?.token) return;
+    if (String(auth?.user?.household_name || "").trim()) return;
+    let cancelled = false;
+    async function hydrateHouseholdName() {
+      try {
+        const household = await fetchHousehold(auth.token);
+        const nextName = String(household?.household_name || "").trim();
+        if (!nextName || cancelled) return;
+        setAuth((previous) => ({
+          ...previous,
+          user: previous?.user ? { ...previous.user, household_name: nextName } : previous?.user,
+        }));
+      } catch {
+        // no-op: this is a non-blocking enhancement for older stored sessions
+      }
+    }
+    hydrateHouseholdName();
+    return () => {
+      cancelled = true;
+    };
+  }, [auth?.token, auth?.user?.household_name]);
+
+  useEffect(() => {
     if (!auth?.token) {
       setSessionTransitionVisible(false);
       return;
@@ -3732,7 +4097,18 @@ export default function App() {
             {activeTab === "recurring" && <RecurringPanel token={auth.token} user={auth.user} />}
             {activeTab === "insights" && <InsightsPanel token={auth.token} />}
             {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
-            {activeTab === "settings" && <SettingsPanel token={auth.token} user={auth.user} />}
+            {activeTab === "settings" && (
+              <SettingsPanel
+                token={auth.token}
+                user={auth.user}
+                onUserUpdated={(updatedUser) =>
+                  setAuth((previous) => ({
+                    ...previous,
+                    user: previous?.user ? { ...previous.user, ...updatedUser } : updatedUser,
+                  }))
+                }
+              />
+            )}
           </div>
         </section>
         <button
@@ -3760,11 +4136,16 @@ export default function App() {
 }
 
 function Header({ user, onQuickAdd, onOpenSettings, settingsActive = false, onLogout }) {
+  const householdLabel = String(user?.household_name || "My Home").trim() || "My Home";
+
   return (
     <header className="topbar">
       <div>
         <p className="kicker">LedgerLoop</p>
-        <h2>Household Finance</h2>
+        <h2 className="topbar-home">
+          <HomeIcon />
+          <span>{householdLabel}</span>
+        </h2>
       </div>
       <div className="topbar-actions">
         {user && (
