@@ -399,6 +399,7 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
   const isRecording = voice.status === "recording";
   const isTranscribing = voice.status === "transcribing";
   const controlsDisabled = disabled || isTranscribing;
+  const recordingBars = [0, 1, 2, 3, 4, 5];
 
   return (
     <button
@@ -421,6 +422,12 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
       aria-label={isRecording ? "Stop recording" : "Start voice input"}
       aria-pressed={isRecording}
     >
+      {isRecording && (
+        <span className="voice-live-rings" aria-hidden="true">
+          <span className="voice-live-ring ring-one" />
+          <span className="voice-live-ring ring-two" />
+        </span>
+      )}
       <span className="voice-icon" aria-hidden="true">
         {isRecording ? (
           <svg viewBox="0 0 24 24" focusable="false">
@@ -433,17 +440,36 @@ function VoiceTranscriptionControls({ voice, disabled = false }) {
           </svg>
         )}
       </span>
+      {isRecording && (
+        <span className="voice-eq" aria-hidden="true">
+          {recordingBars.map((bar) => (
+            <span key={bar} style={{ "--bar-index": String(bar) }} />
+          ))}
+        </span>
+      )}
     </button>
   );
 }
 
 function VoiceTranscriptionFeedback({ voice }) {
+  const isRecording = voice.status === "recording";
   const isTranscribing = voice.status === "transcribing";
+  const listeningBars = Array.from({ length: 16 }, (_, index) => index);
 
   return (
     <>
       {voice.supportChecked && !voice.supported && (
         <p className="hint voice-feedback">Voice input is unavailable in this browser. You can continue by typing.</p>
+      )}
+      {isRecording && (
+        <div className="voice-listening-shell" role="status" aria-live="polite">
+          <p className="hint voice-feedback">Listening...</p>
+          <div className="voice-listening-wave" aria-hidden="true">
+            {listeningBars.map((bar) => (
+              <span key={bar} style={{ "--bar-index": String(bar) }} />
+            ))}
+          </div>
+        </div>
       )}
       {isTranscribing && <p className="hint voice-feedback">Transcribing voice note...</p>}
       {voice.error && <p className="form-error voice-feedback">{voice.error}</p>}
@@ -1460,7 +1486,6 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
 
   return (
     <section className="panel">
-      <h2>Add Expenses</h2>
       <p className="hint">
         Describe spending naturally and we'll turn it into expense drafts you can edit before saving.
       </p>
@@ -1726,8 +1751,7 @@ function HouseholdPanel({ token, user }) {
 
   return (
     <section className="panel">
-      <div className="dashboard-header">
-        <h2>People & Access</h2>
+      <div className="panel-action-row">
         <button className="btn-ghost" type="button" onClick={loadPeopleData} disabled={loading}>
           Refresh
         </button>
@@ -1965,8 +1989,7 @@ function RecurringPanel({ token, user }) {
 
   return (
     <section className="panel">
-      <div className="dashboard-header">
-        <h2>Recurring Expenses</h2>
+      <div className="panel-action-row">
         <button className="btn-ghost" type="button" onClick={loadRecurringData} disabled={loading}>
           Refresh
         </button>
@@ -2958,11 +2981,8 @@ function DashboardPanel({ token, embedded = false }) {
           <div className="stats-grid">
             <article className="stat-card">
               <p className="kicker">Current Month</p>
-              <h3>{dashboard.period_month}</h3>
+              <h3>{formatMonthYearValue(dashboard.period_month, { monthStyle: "long", separator: " " })}</h3>
               <p className="metric-value">{formatCurrencyValue(dashboard.total_spend)}</p>
-              <small>
-                {dashboard.period_start} to {dashboard.period_end}
-              </small>
             </article>
             <article className="stat-card">
               <p className="kicker">Confirmed Expenses</p>
@@ -2985,7 +3005,7 @@ function DashboardPanel({ token, embedded = false }) {
                 <div className="bar-list">
                   {dashboard.monthly_trend.map((item) => (
                     <div className="bar-row" key={item.month}>
-                      <span>{item.month}</span>
+                      <span>{formatMonthYearValue(item.month, { monthStyle: "short", separator: "-" })}</span>
                       <div className="bar-track">
                         <div
                           className="bar-fill"
@@ -3109,6 +3129,49 @@ function formatDateValue(value) {
     month: "short",
     day: "numeric",
   });
+}
+
+function parseYearMonthValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const match = raw.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
+  return new Date(year, month - 1, 1);
+}
+
+function formatMonthYearValue(value, { monthStyle = "long", separator = " " } = {}) {
+  if (value === null || value === undefined) return "";
+  let parsed = null;
+  if (value instanceof Date) {
+    parsed = Number.isNaN(value.getTime()) ? null : value;
+  } else {
+    parsed = parseYearMonthValue(value);
+    if (!parsed) {
+      const trimmed = String(value).trim();
+      if (!trimmed) return "";
+      const fallbackDate = new Date(trimmed);
+      if (Number.isNaN(fallbackDate.getTime())) return value;
+      parsed = fallbackDate;
+    }
+  }
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      month: monthStyle,
+      year: "numeric",
+    }).formatToParts(parsed);
+    const monthPart = parts.find((part) => part.type === "month")?.value;
+    const yearPart = parts.find((part) => part.type === "year")?.value;
+    if (!monthPart || !yearPart) return value;
+    return `${monthPart}${separator}${yearPart}`;
+  } catch {
+    return value;
+  }
 }
 
 function getRowCurrency(row, columns) {
@@ -3367,8 +3430,7 @@ function InsightsPanel({ token }) {
 
   return (
     <section className="panel">
-      <div className="dashboard-header">
-        <h2>Insights</h2>
+      <div className="panel-action-row">
         <div className="insights-switch" role="tablist" aria-label="Insights Sections">
           <button
             type="button"
