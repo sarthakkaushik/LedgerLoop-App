@@ -31,6 +31,7 @@ uv run pytest -q
 - `GET /auth/me`
 - `GET /auth/household` (household members, and invite code for admin)
 - `POST /expenses/log` (chat-aware parsing + saves draft rows)
+- `POST /expenses/transcribe-audio` (voice note transcription via Groq Whisper; returns text for Capture/Insights query boxes)
 - `POST /expenses/confirm` (confirm/edit drafts with idempotency key)
 - `GET /expenses/list` (recent expense feed with `logged_by_name`, household-scoped)
 - `GET /expenses/dashboard` (month totals + category/user split + trend)
@@ -45,3 +46,4 @@ uv run pytest -q
 - Runtime now uses server env values directly (no frontend/API key entry required per household).
 - Cerebras mode: set `LLM_PROVIDER=cerebras`, `CEREBRAS_API_KEY`, and `CEREBRAS_MODEL=gpt-oss-120b`.
 - OpenAI mode: set `LLM_PROVIDER=openai` with `OPENAI_API_KEY`; analytics SQL agent uses OpenAI Agents SDK and injects live DB schema into system instructions on each request.
+- Voice transcription: set `GROQ_API_KEY` and optionally `GROQ_WHISPER_MODEL` (default `whisper-large-v3-turbo`) and `VOICE_MAX_UPLOAD_MB` (default `10`).

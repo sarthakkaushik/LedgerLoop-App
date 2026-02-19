@@ -5,19 +5,21 @@ import io
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.api.deps import get_current_user, get_expense_parser, get_llm_parse_context
+from app.core.config import get_settings
 from app.core.db import get_session
 from app.models.expense import Expense, ExpenseStatus
 from app.models.household_category import HouseholdCategory
 from app.models.household_subcategory import HouseholdSubcategory
 from app.models.user import User, UserRole
 from app.schemas.expense import (
+    ExpenseAudioTranscriptionResponse,
     DashboardCategoryPoint,
     DashboardDailyPoint,
     DashboardMonthlyPoint,
@@ -33,12 +35,37 @@ from app.schemas.expense import (
     ExpenseLogRequest,
     ExpenseLogResponse,
 )
+from app.services.audio.groq_transcription import (
+    GroqTranscriptionConfigError,
+    GroqTranscriptionUpstreamError,
+    transcribe_audio_with_groq,
+)
 from app.services.llm.base import ExpenseParserProvider
 from app.services.llm.provider_factory import ProviderNotConfiguredError
 from app.services.llm.types import ParseContext
 from app.services.taxonomy_service import normalize_taxonomy_name
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
+settings = get_settings()
+
+ALLOWED_AUDIO_CONTENT_TYPES = {
+    "audio/webm",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/mp4",
+    "audio/ogg",
+}
+
+AUDIO_EXTENSION_TO_CONTENT_TYPE = {
+    "webm": "audio/webm",
+    "wav": "audio/wav",
+    "mp3": "audio/mpeg",
+    "mp4": "audio/mp4",
+    "m4a": "audio/mp4",
+    "ogg": "audio/ogg",
+}
 
 
 def _parse_date_incurred(value: str | None, fallback: date) -> date:
@@ -99,6 +126,18 @@ def _clean_optional_text(value: str | None) -> str | None:
         return None
     cleaned = " ".join(value.strip().split())
     return cleaned or None
+
+
+def _normalize_content_type(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.split(";")[0].strip().lower()
+
+
+def _audio_extension_from_filename(filename: str | None) -> str:
+    if not filename or "." not in filename:
+        return ""
+    return filename.rsplit(".", 1)[1].strip().lower()
 
 
 async def _load_taxonomy_lookup(
@@ -282,6 +321,67 @@ async def log_expenses(
         needs_clarification=parsed.needs_clarification,
         clarification_questions=parsed.clarification_questions,
     )
+
+
+@router.post("/transcribe-audio", response_model=ExpenseAudioTranscriptionResponse)
+async def transcribe_audio(
+    audio_file: UploadFile = File(...),
+    language: str | None = Form(default=None),
+    user: User = Depends(get_current_user),
+) -> ExpenseAudioTranscriptionResponse:
+    _ = user
+    audio_bytes = await audio_file.read()
+    if not audio_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Audio file is empty.",
+        )
+
+    max_upload_bytes = max(0, settings.voice_max_upload_mb) * 1024 * 1024
+    if len(audio_bytes) > max_upload_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Audio file is too large. Limit is {settings.voice_max_upload_mb} MB.",
+        )
+
+    content_type = _normalize_content_type(audio_file.content_type)
+    extension = _audio_extension_from_filename(audio_file.filename)
+    if (
+        content_type not in ALLOWED_AUDIO_CONTENT_TYPES
+        and extension not in AUDIO_EXTENSION_TO_CONTENT_TYPE
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Unsupported audio type. Upload webm, wav, mp3, mp4, m4a, or ogg.",
+        )
+
+    safe_content_type = content_type
+    if not safe_content_type:
+        safe_content_type = AUDIO_EXTENSION_TO_CONTENT_TYPE.get(
+            extension, "application/octet-stream"
+        )
+
+    try:
+        text, resolved_language = await transcribe_audio_with_groq(
+            api_key=settings.groq_api_key,
+            model=settings.groq_whisper_model,
+            audio_bytes=audio_bytes,
+            filename=audio_file.filename or "voice-note.webm",
+            content_type=safe_content_type,
+            language=language,
+        )
+    except GroqTranscriptionConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except GroqTranscriptionUpstreamError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    return ExpenseAudioTranscriptionResponse(text=text, language=resolved_language)
 
 
 @router.post("/confirm", response_model=ExpenseConfirmResponse)

@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash"
     cerebras_api_key: str | None = None
     cerebras_model: str = "gpt-oss-120b"
+    groq_api_key: str | None = None
+    groq_whisper_model: str = "whisper-large-v3-turbo"
+    voice_max_upload_mb: int = 10
 
     @property
     def cors_origins(self) -> list[str]:

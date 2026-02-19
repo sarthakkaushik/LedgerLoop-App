@@ -7,6 +7,11 @@ class ExpenseLogRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
 
 
+class ExpenseAudioTranscriptionResponse(BaseModel):
+    text: str = Field(min_length=1)
+    language: str | None = None
+
+
 class ExpenseDraft(BaseModel):
     id: str | None = None
     amount: float | None = None

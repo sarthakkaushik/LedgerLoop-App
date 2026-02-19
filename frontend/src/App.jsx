@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Component, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -21,6 +21,7 @@ import {
   loginUser,
   parseExpenseText,
   registerUser,
+  transcribeExpenseAudio,
   updateTaxonomyCategory,
   updateTaxonomySubcategory,
 } from "./api";
@@ -30,7 +31,6 @@ const tabs = [
   { id: "ledger", label: "Ledger" },
   { id: "insights", label: "Insights" },
   { id: "people", label: "People & Access" },
-  { id: "settings", label: "Settings" },
 ];
 
 const initialRegister = {
@@ -66,11 +66,397 @@ const GLOBAL_CURRENCY_OPTIONS = [
   { symbol: "AED", code: "AED", name: "UAE Dirham" },
 ];
 
+function safeStorageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // no-op: storage can be blocked in some browser contexts
+  }
+}
+
+function safeStorageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // no-op: storage can be blocked in some browser contexts
+  }
+}
+
+function safeParseStoredUser(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    safeStorageRemove("expense_auth_user");
+    return null;
+  }
+}
+
 function normalizeTaxonomyName(value) {
   return String(value || "")
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
+}
+
+const RECORDER_MIME_TYPES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4",
+  "audio/ogg;codecs=opus",
+];
+
+const MIME_EXTENSION_MAP = {
+  "audio/webm": "webm",
+  "audio/mp4": "mp4",
+  "audio/ogg": "ogg",
+  "audio/wav": "wav",
+  "audio/mpeg": "mp3",
+};
+
+function appendVoiceTranscript(existingText, transcript) {
+  const current = String(existingText || "");
+  const next = String(transcript || "").trim();
+  if (!next) return current;
+  const trimmedCurrent = current.trimEnd();
+  if (!trimmedCurrent) return next;
+  return `${trimmedCurrent}\n${next}`;
+}
+
+function isVoiceInputSupported() {
+  try {
+    if (typeof window === "undefined") return false;
+    const browserNavigator = typeof window.navigator !== "undefined" ? window.navigator : null;
+    if (
+      !browserNavigator ||
+      !browserNavigator.mediaDevices ||
+      typeof browserNavigator.mediaDevices.getUserMedia !== "function"
+    ) {
+      return false;
+    }
+    return typeof window.MediaRecorder !== "undefined";
+  } catch {
+    return false;
+  }
+}
+
+function pickRecorderMimeType() {
+  try {
+    if (typeof window === "undefined" || typeof window.MediaRecorder === "undefined") {
+      return "";
+    }
+    if (typeof window.MediaRecorder.isTypeSupported !== "function") {
+      return "";
+    }
+    return RECORDER_MIME_TYPES.find((mimeType) => window.MediaRecorder.isTypeSupported(mimeType)) || "";
+  } catch {
+    return "";
+  }
+}
+
+function extensionFromMimeType(mimeType) {
+  const normalized = String(mimeType || "").split(";")[0].trim().toLowerCase();
+  return MIME_EXTENSION_MAP[normalized] || "webm";
+}
+
+function resolveVoiceErrorMessage(error) {
+  if (!error) return "Voice capture failed. Please try again.";
+  const name = String(error?.name || "");
+  if (name === "NotAllowedError") {
+    return "Microphone permission was denied. Allow microphone access and try again.";
+  }
+  if (name === "NotFoundError") {
+    return "No microphone was found on this device.";
+  }
+  const message = String(error?.message || "").trim();
+  return message || "Voice capture failed. Please try again.";
+}
+
+function useVoiceTranscription({ token, onTranscript }) {
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState("");
+  const [supported, setSupported] = useState(false);
+  const [supportChecked, setSupportChecked] = useState(false);
+  const recorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const onTranscriptRef = useRef(onTranscript);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    onTranscriptRef.current = onTranscript;
+  }, [onTranscript]);
+
+  useEffect(() => {
+    try {
+      setSupported(isVoiceInputSupported());
+    } catch {
+      setSupported(false);
+    } finally {
+      setSupportChecked(true);
+    }
+  }, []);
+
+  function cleanupStream() {
+    const stream = streamRef.current;
+    if (!stream) return;
+    stream.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }
+
+  function clearError() {
+    setError("");
+  }
+
+  function cancelRecording() {
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    chunksRef.current = [];
+    try {
+      if (recorder && recorder.state !== "inactive") {
+        recorder.ondataavailable = null;
+        recorder.onerror = null;
+        recorder.onstop = null;
+        recorder.stop();
+      }
+    } catch {
+      // no-op: best-effort stop
+    }
+    cleanupStream();
+    if (mountedRef.current) {
+      setStatus("idle");
+      setError("");
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      try {
+        const recorder = recorderRef.current;
+        if (recorder && recorder.state !== "inactive") {
+          recorder.stop();
+        }
+      } catch {
+        // no-op: best-effort cleanup
+      }
+      cleanupStream();
+    };
+  }, []);
+
+  async function startRecording() {
+    if (!isVoiceInputSupported()) {
+      setSupported(false);
+      setError("Voice input is not supported in this browser.");
+      return;
+    }
+    setSupported(true);
+    if (status !== "idle") return;
+    clearError();
+    try {
+      const browserNavigator = window.navigator;
+      const stream = await browserNavigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const mimeType = pickRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+      recorderRef.current = recorder;
+      recorder.start();
+      setStatus("recording");
+    } catch (err) {
+      cleanupStream();
+      setStatus("idle");
+      setError(resolveVoiceErrorMessage(err));
+    }
+  }
+
+  async function stopRecording() {
+    if (status !== "recording") return;
+    const recorder = recorderRef.current;
+    if (!recorder) {
+      setStatus("idle");
+      return;
+    }
+    setStatus("transcribing");
+    clearError();
+    try {
+      const stopPromise = new Promise((resolve) => {
+        recorder.addEventListener("stop", resolve, { once: true });
+      });
+      recorder.stop();
+      await stopPromise;
+
+      const chunks = chunksRef.current;
+      chunksRef.current = [];
+      recorderRef.current = null;
+      cleanupStream();
+
+      const guessedMimeType = String(recorder.mimeType || chunks[0]?.type || "audio/webm");
+      const audioBlob = new Blob(chunks, { type: guessedMimeType });
+      if (audioBlob.size === 0) {
+        throw new Error("No voice note was captured. Please record again.");
+      }
+
+      const extension = extensionFromMimeType(audioBlob.type);
+      const formData = new FormData();
+      formData.append("audio_file", audioBlob, `voice-note.${extension}`);
+      const normalizedLanguage = "en";
+      if (normalizedLanguage) {
+        formData.append("language", normalizedLanguage);
+      }
+
+      const response = await transcribeExpenseAudio(token, formData);
+      const transcript = String(response?.text || "").trim();
+      if (!transcript) {
+        throw new Error("No speech transcript was detected. Try speaking a little louder.");
+      }
+      if (typeof onTranscriptRef.current === "function") {
+        onTranscriptRef.current(transcript);
+      }
+      if (mountedRef.current) {
+        setStatus("idle");
+      }
+    } catch (err) {
+      cleanupStream();
+      recorderRef.current = null;
+      if (mountedRef.current) {
+        setStatus("idle");
+        setError(resolveVoiceErrorMessage(err));
+      }
+    }
+  }
+
+  return {
+    supported,
+    supportChecked,
+    status,
+    error,
+    startRecording,
+    stopRecording,
+    cancelRecording,
+    clearError,
+  };
+}
+
+function VoiceTranscriptionControls({ voice, disabled = false }) {
+  const isRecording = voice.status === "recording";
+  const isTranscribing = voice.status === "transcribing";
+  const controlsDisabled = disabled || isTranscribing;
+
+  return (
+    <button
+      type="button"
+      className={
+        isRecording
+          ? "voice-corner-button recording"
+          : isTranscribing
+            ? "voice-corner-button transcribing"
+            : "voice-corner-button"
+      }
+      onClick={() => {
+        if (isRecording) {
+          void voice.stopRecording();
+        } else {
+          void voice.startRecording();
+        }
+      }}
+      disabled={controlsDisabled || !voice.supportChecked || !voice.supported}
+      aria-label={isRecording ? "Stop recording" : "Start voice input"}
+      aria-pressed={isRecording}
+    >
+      <span className="voice-icon" aria-hidden="true">
+        {isRecording ? (
+          <svg viewBox="0 0 24 24" focusable="false">
+            <rect x="7" y="7" width="10" height="10" rx="2" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
+            <path d="M6 11a1 1 0 1 1 2 0 4 4 0 1 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.91V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.09A6 6 0 0 1 6 11Z" />
+          </svg>
+        )}
+      </span>
+    </button>
+  );
+}
+
+function VoiceTranscriptionFeedback({ voice }) {
+  const isTranscribing = voice.status === "transcribing";
+
+  return (
+    <>
+      {voice.supportChecked && !voice.supported && (
+        <p className="hint voice-feedback">Voice input is unavailable in this browser. You can continue by typing.</p>
+      )}
+      {isTranscribing && <p className="hint voice-feedback">Transcribing voice note...</p>}
+      {voice.error && <p className="form-error voice-feedback">{voice.error}</p>}
+    </>
+  );
+}
+
+class RuntimeErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: "" };
+  }
+
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      message: String(error?.message || "Unexpected runtime error."),
+    };
+  }
+
+  componentDidCatch(error) {
+    try {
+      console.error("App runtime error:", error);
+    } catch {
+      // no-op
+    }
+  }
+
+  render() {
+    if (!this.state.hasError) {
+      return this.props.children;
+    }
+    return (
+      <main className="app-shell">
+        <section className="panel">
+          <h2>Something went wrong</h2>
+          <p className="hint">
+            The app hit a runtime error. Please reload. If this keeps happening, we will debug using
+            the exact error shown below.
+          </p>
+          <p className="form-error">{this.state.message}</p>
+          <button
+            type="button"
+            className="btn-main"
+            onClick={() => {
+              if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
+                window.location.reload();
+              }
+            }}
+          >
+            Reload App
+          </button>
+        </section>
+      </main>
+    );
+  }
 }
 
 function ConfirmModal({
@@ -127,7 +513,6 @@ function SessionTransition() {
 function QuickAddModal({
   open,
   token,
-  source,
   onClose,
   onRouteToCapture,
   onNotify,
@@ -152,6 +537,15 @@ function QuickAddModal({
     () => taxonomyCategories.map((category) => category.name),
     [taxonomyCategories]
   );
+  const quickAddVoice = useVoiceTranscription({
+    token,
+    onTranscript: (transcript) => {
+      setText((previous) => appendVoiceTranscript(previous, transcript));
+      setError("");
+    },
+  });
+  const quickAddVoiceTranscribing = quickAddVoice.status === "transcribing";
+  const quickAddVoiceRecording = quickAddVoice.status === "recording";
 
   function getSubcategoryOptions(categoryName) {
     const normalized = normalizeTaxonomyName(categoryName);
@@ -199,9 +593,11 @@ function QuickAddModal({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, loading, confirming, text, drafts, result]);
+  }, [open, loading, confirming, quickAddVoiceTranscribing, quickAddVoiceRecording, text, drafts, result]);
 
   function resetModalState() {
+    quickAddVoice.cancelRecording();
+    quickAddVoice.clearError();
     setText("");
     setResult(null);
     setDrafts([]);
@@ -315,7 +711,10 @@ function QuickAddModal({
   }
 
   async function handleAttemptClose() {
-    if (loading || confirming) return;
+    if (loading || confirming || quickAddVoiceTranscribing) return;
+    if (quickAddVoiceRecording) {
+      quickAddVoice.cancelRecording();
+    }
     const hasUnsavedWork = Boolean(text.trim() || drafts.length > 0 || result);
     if (hasUnsavedWork) {
       setDiscardConfirmOpen(true);
@@ -323,12 +722,6 @@ function QuickAddModal({
     }
     resetModalState();
     onClose();
-  }
-
-  function resolveSourceLabel(value) {
-    if (value === "shortcut") return "Shortcut";
-    if (value === "fab") return "Mobile FAB";
-    return "Header";
   }
 
   if (!open) return null;
@@ -350,31 +743,48 @@ function QuickAddModal({
               <h3>Quick Add</h3>
               <p className="hint">Log expenses instantly from any workspace tab.</p>
             </div>
-            <div className="member-actions">
-              <span className="tool-chip">{resolveSourceLabel(source)}</span>
-              <button type="button" className="btn-ghost" onClick={() => void handleAttemptClose()}>
-                Close
-              </button>
-            </div>
+            <button
+              type="button"
+              className="quick-add-close"
+              onClick={() => void handleAttemptClose()}
+              disabled={loading || confirming || quickAddVoiceTranscribing}
+              aria-label="Close quick add"
+            >
+              &times;
+            </button>
           </div>
 
           {taxonomyLoading && <p className="hint subtle-loader">Loading category options...</p>}
           {taxonomyError && <p className="form-error">{taxonomyError}</p>}
           {error && <p className="form-error">{error}</p>}
           <div className="stack">
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={4}
-              placeholder={`Example: Paid ${RUPEE_SYMBOL}1200 for electricity yesterday and ${RUPEE_SYMBOL}300 for groceries`}
-              autoFocus
-            />
+            <div className="voice-textarea-wrap">
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                rows={4}
+                placeholder={`Example: Paid ${RUPEE_SYMBOL}1200 for electricity yesterday and ${RUPEE_SYMBOL}300 for groceries`}
+                autoFocus
+              />
+              <div className="voice-textarea-action">
+                <VoiceTranscriptionControls voice={quickAddVoice} disabled={loading || confirming} />
+              </div>
+            </div>
+            <VoiceTranscriptionFeedback voice={quickAddVoice} />
             <div className="quick-add-actions">
-              <button className="btn-main" onClick={handleParse} disabled={loading || confirming}>
+              <button
+                className="btn-main"
+                onClick={handleParse}
+                disabled={loading || confirming || quickAddVoiceTranscribing}
+              >
                 {loading ? "Reading..." : "Create Drafts"}
               </button>
               {result?.needs_clarification && (
-                <button className="btn-ghost" onClick={handleSendToCapture} disabled={loading || confirming}>
+                <button
+                  className="btn-ghost"
+                  onClick={handleSendToCapture}
+                  disabled={loading || confirming || quickAddVoiceTranscribing}
+                >
                   Send to Capture Review
                 </button>
               )}
@@ -407,13 +817,13 @@ function QuickAddModal({
             <article className="result-card">
               <div className="row draft-header">
                 <h4>Review Drafts</h4>
-                <button
-                  className="btn-main"
-                  onClick={handleSaveToLedger}
-                  disabled={loading || confirming}
-                >
-                  {confirming ? "Saving..." : "Save to Ledger"}
-                </button>
+                  <button
+                    className="btn-main"
+                    onClick={handleSaveToLedger}
+                    disabled={loading || confirming || quickAddVoiceTranscribing}
+                  >
+                    {confirming ? "Saving..." : "Save to Ledger"}
+                  </button>
               </div>
               <div className="quick-add-drafts">
                 {drafts.map((draft, index) => (
@@ -829,6 +1239,14 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
     () => taxonomyCategories.map((category) => category.name),
     [taxonomyCategories]
   );
+  const captureVoice = useVoiceTranscription({
+    token,
+    onTranscript: (transcript) => {
+      setText((previous) => appendVoiceTranscript(previous, transcript));
+      setError("");
+    },
+  });
+  const captureVoiceTranscribing = captureVoice.status === "transcribing";
 
   function getSubcategoryOptions(categoryName) {
     const normalized = normalizeTaxonomyName(categoryName);
@@ -939,13 +1357,19 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
       {taxonomyLoading && <p className="hint">Loading household taxonomy...</p>}
       {taxonomyError && <p className="form-error">{taxonomyError}</p>}
       <div className="stack">
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={5}
-          placeholder={`Example: Bought groceries for ${RUPEE_SYMBOL}500 and paid ${RUPEE_SYMBOL}1200 for electricity yesterday`}
-        />
-        <button className="btn-main" onClick={handleParse} disabled={loading}>
+        <div className="voice-textarea-wrap">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={5}
+            placeholder={`Example: Bought groceries for ${RUPEE_SYMBOL}500 and paid ${RUPEE_SYMBOL}1200 for electricity yesterday`}
+          />
+          <div className="voice-textarea-action">
+            <VoiceTranscriptionControls voice={captureVoice} disabled={loading || confirming} />
+          </div>
+        </div>
+        <VoiceTranscriptionFeedback voice={captureVoice} />
+        <button className="btn-main" onClick={handleParse} disabled={loading || captureVoiceTranscribing}>
           {loading ? "Preparing..." : "Create Drafts"}
         </button>
       </div>
@@ -1420,32 +1844,89 @@ function LedgerPanel({ token, user }) {
           {!feed?.items?.length ? (
             <p>No expenses in this filter.</p>
           ) : (
-            <div className="table-wrap">
-              <table className="analytics-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Logged By</th>
-                    <th>Category</th>
-                    <th>Subcategory</th>
-                    <th>Description</th>
-                    <th>Amount</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {feed.items.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.date_incurred}</td>
-                      <td>{item.logged_by_name}</td>
-                      <td>{item.category || "Other"}</td>
-                      <td>{item.subcategory || "-"}</td>
-                      <td>{item.description || item.merchant_or_item || "-"}</td>
-                      <td>{formatCurrencyValue(item.amount, item.currency)}</td>
-                      <td>{item.status}</td>
-                      <td>
-                        {(user?.role === "admin" || item.logged_by_user_id === user?.id) && (
+            <>
+              <div className="table-wrap desktop-table-only">
+                <table className="analytics-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Logged By</th>
+                      <th>Category</th>
+                      <th>Subcategory</th>
+                      <th>Description</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {feed.items.map((item) => {
+                      const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                      return (
+                        <tr key={item.id}>
+                          <td>{item.date_incurred}</td>
+                          <td>{item.logged_by_name}</td>
+                          <td>{item.category || "Other"}</td>
+                          <td>{item.subcategory || "-"}</td>
+                          <td>{item.description || item.merchant_or_item || "-"}</td>
+                          <td>{formatCurrencyValue(item.amount, item.currency)}</td>
+                          <td>{item.status}</td>
+                          <td>
+                            {canDelete && (
+                              <button
+                                type="button"
+                                className="btn-danger"
+                                onClick={() => setExpenseToDelete(item)}
+                                disabled={deletingExpenseId === item.id}
+                              >
+                                {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mobile-data-list mobile-cards-only">
+                {feed.items.map((item) => {
+                  const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                  return (
+                    <article className="mobile-data-card" key={`mobile-${item.id}`}>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Date</span>
+                        <strong className="mobile-data-value">{item.date_incurred}</strong>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Logged By</span>
+                        <span className="mobile-data-value">{item.logged_by_name}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Category</span>
+                        <span className="mobile-data-value">{item.category || "Other"}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Subcategory</span>
+                        <span className="mobile-data-value">{item.subcategory || "-"}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Description</span>
+                        <span className="mobile-data-value">{item.description || item.merchant_or_item || "-"}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Amount</span>
+                        <strong className="mobile-data-value">
+                          {formatCurrencyValue(item.amount, item.currency)}
+                        </strong>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Status</span>
+                        <span className="mobile-data-value">{item.status}</span>
+                      </div>
+                      {canDelete && (
+                        <div className="mobile-data-actions">
                           <button
                             type="button"
                             className="btn-danger"
@@ -1454,13 +1935,13 @@ function LedgerPanel({ token, user }) {
                           >
                             {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
                           </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </>
           )}
         </article>
       )}
@@ -2160,6 +2641,14 @@ function AnalyticsPanel({ token, embedded = false }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showDebug, setShowDebug] = useState(false);
+  const analyticsVoice = useVoiceTranscription({
+    token,
+    onTranscript: (transcript) => {
+      setText((previous) => appendVoiceTranscript(previous, transcript));
+      setError("");
+    },
+  });
+  const analyticsVoiceTranscribing = analyticsVoice.status === "transcribing";
 
   const maxPointValue = useMemo(() => {
     if (!result?.chart?.points?.length) return 1;
@@ -2216,20 +2705,30 @@ function AnalyticsPanel({ token, embedded = false }) {
             key={prompt}
             className="btn-ghost prompt-pill"
             onClick={() => void runQuery(prompt)}
-            disabled={loading}
+            disabled={loading || analyticsVoiceTranscribing}
           >
             {prompt}
           </button>
         ))}
       </div>
       <div className="stack">
-        <textarea
-          rows={4}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Ask anything about household spending..."
-        />
-        <button className="btn-main" onClick={() => void runQuery()} disabled={loading}>
+        <div className="voice-textarea-wrap">
+          <textarea
+            rows={4}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Ask anything about household spending..."
+          />
+          <div className="voice-textarea-action">
+            <VoiceTranscriptionControls voice={analyticsVoice} disabled={loading} />
+          </div>
+        </div>
+        <VoiceTranscriptionFeedback voice={analyticsVoice} />
+        <button
+          className="btn-main"
+          onClick={() => void runQuery()}
+          disabled={loading || analyticsVoiceTranscribing}
+        >
           {loading ? "Analyzing..." : "Run Insight"}
         </button>
       </div>
@@ -2307,28 +2806,46 @@ function AnalyticsPanel({ token, embedded = false }) {
               ) : visibleTable.rows.length === 0 ? (
                 <p>No rows returned.</p>
               ) : (
-                <div className="table-wrap">
-                  <table className="analytics-table">
-                    <thead>
-                      <tr>
-                        {visibleTable.columns.map((column) => (
-                          <th key={column}>{toColumnLabel(column)}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleTable.rows.map((row, index) => (
-                        <tr key={index}>
-                          {row.map((cell, cellIndex) => (
-                            <td key={`${index}-${cellIndex}`}>
-                              {formatCell(cell, visibleTable.columns[cellIndex], row, visibleTable.columns)}
-                            </td>
+                <>
+                  <div className="table-wrap desktop-table-only">
+                    <table className="analytics-table">
+                      <thead>
+                        <tr>
+                          {visibleTable.columns.map((column) => (
+                            <th key={column}>{toColumnLabel(column)}</th>
                           ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {visibleTable.rows.map((row, index) => (
+                          <tr key={index}>
+                            {row.map((cell, cellIndex) => (
+                              <td key={`${index}-${cellIndex}`}>
+                                {formatCell(cell, visibleTable.columns[cellIndex], row, visibleTable.columns)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="mobile-data-list mobile-cards-only">
+                    {visibleTable.rows.map((row, index) => (
+                      <article className="mobile-data-card" key={`analytics-mobile-${index}`}>
+                        <p className="mobile-data-card-title">Row {index + 1}</p>
+                        {visibleTable.columns.map((column, cellIndex) => (
+                          <div className="mobile-data-row" key={`analytics-mobile-${index}-${column}`}>
+                            <span className="mobile-data-label">{toColumnLabel(column)}</span>
+                            <span className="mobile-data-value">
+                              {formatCell(row[cellIndex], column, row, visibleTable.columns)}
+                            </span>
+                          </div>
+                        ))}
+                      </article>
+                    ))}
+                  </div>
+                </>
               )}
             </article>
           )}
@@ -2374,30 +2891,29 @@ function InsightsPanel({ token }) {
 
 export default function App() {
   const [auth, setAuth] = useState(() => {
-    const token = localStorage.getItem("expense_auth_token");
-    const userRaw = localStorage.getItem("expense_auth_user");
+    const token = safeStorageGet("expense_auth_token");
+    const userRaw = safeStorageGet("expense_auth_user");
     return {
       token,
-      user: userRaw ? JSON.parse(userRaw) : null,
+      user: safeParseStoredUser(userRaw),
     };
   });
   const [activeTab, setActiveTab] = useState("capture");
   const [sessionTransitionVisible, setSessionTransitionVisible] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
-  const [quickAddSource, setQuickAddSource] = useState("header");
   const [capturePrefillText, setCapturePrefillText] = useState("");
   const [globalNotice, setGlobalNotice] = useState("");
 
   useEffect(() => {
     if (auth?.token) {
-      localStorage.setItem("expense_auth_token", auth.token);
+      safeStorageSet("expense_auth_token", auth.token);
     } else {
-      localStorage.removeItem("expense_auth_token");
+      safeStorageRemove("expense_auth_token");
     }
     if (auth?.user) {
-      localStorage.setItem("expense_auth_user", JSON.stringify(auth.user));
+      safeStorageSet("expense_auth_user", JSON.stringify(auth.user));
     } else {
-      localStorage.removeItem("expense_auth_user");
+      safeStorageRemove("expense_auth_user");
     }
   }, [auth]);
 
@@ -2418,7 +2934,6 @@ export default function App() {
     function onKeyDown(event) {
       if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === "k") {
         event.preventDefault();
-        setQuickAddSource("shortcut");
         setQuickAddOpen(true);
       }
     }
@@ -2434,104 +2949,105 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [globalNotice]);
 
-  const tabLabel = useMemo(
-    () => tabs.find((tab) => tab.id === activeTab)?.label ?? "Capture",
-    [activeTab]
-  );
+  const tabLabel = useMemo(() => {
+    if (activeTab === "settings") return "Settings";
+    return tabs.find((tab) => tab.id === activeTab)?.label ?? "Capture";
+  }, [activeTab]);
 
   if (!auth?.token) {
     return (
-      <main className="app-shell">
-        <Header user={null} onLogout={() => {}} />
-        <AuthCard onAuthSuccess={setAuth} />
-      </main>
+      <RuntimeErrorBoundary>
+        <main className="app-shell">
+          <Header user={null} onLogout={() => {}} />
+          <AuthCard onAuthSuccess={setAuth} />
+        </main>
+      </RuntimeErrorBoundary>
     );
   }
 
   if (sessionTransitionVisible) {
     return (
-      <main className="app-shell">
-        <SessionTransition />
-      </main>
+      <RuntimeErrorBoundary>
+        <main className="app-shell">
+          <SessionTransition />
+        </main>
+      </RuntimeErrorBoundary>
     );
   }
 
   return (
-    <main className="app-shell">
-      {globalNotice && <div className="app-notice">{globalNotice}</div>}
-      <Header
-        user={auth.user}
-        onQuickAdd={() => {
-          setQuickAddSource("header");
-          setQuickAddOpen(true);
-        }}
-        onLogout={() => {
-          setAuth({ token: null, user: null });
-          setActiveTab("capture");
-          setQuickAddOpen(false);
-          setCapturePrefillText("");
-          setGlobalNotice("");
-        }}
-      />
-      <section className="workspace">
-        <aside className="side-tabs">
-          <p className="kicker">Workspace</p>
-          {tabs.map((tab) => (
-            <button
-              type="button"
-              key={tab.id}
-              className={activeTab === tab.id ? "tab active" : "tab"}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </aside>
-        <div className="content">
-          <div className="content-header">
-            <h1>{tabLabel}</h1>
+    <RuntimeErrorBoundary>
+      <main className="app-shell">
+        {globalNotice && <div className="app-notice">{globalNotice}</div>}
+        <Header
+          user={auth.user}
+          onQuickAdd={() => setQuickAddOpen(true)}
+          onOpenSettings={() => setActiveTab("settings")}
+          settingsActive={activeTab === "settings"}
+          onLogout={() => {
+            setAuth({ token: null, user: null });
+            setActiveTab("capture");
+            setQuickAddOpen(false);
+            setCapturePrefillText("");
+            setGlobalNotice("");
+          }}
+        />
+        <section className="workspace">
+          <aside className="side-tabs">
+            <p className="kicker">Workspace</p>
+            {tabs.map((tab) => (
+              <button
+                type="button"
+                key={tab.id}
+                className={activeTab === tab.id ? "tab active" : "tab"}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </aside>
+          <div className="content">
+            <div className="content-header">
+              <h1>{tabLabel}</h1>
+            </div>
+            {activeTab === "capture" && (
+              <ExpenseLogPanel
+                token={auth.token}
+                prefilledText={capturePrefillText}
+                onPrefilledTextConsumed={() => setCapturePrefillText("")}
+              />
+            )}
+            {activeTab === "ledger" && <LedgerPanel token={auth.token} user={auth.user} />}
+            {activeTab === "insights" && <InsightsPanel token={auth.token} />}
+            {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
+            {activeTab === "settings" && <SettingsPanel token={auth.token} user={auth.user} />}
           </div>
-          {activeTab === "capture" && (
-            <ExpenseLogPanel
-              token={auth.token}
-              prefilledText={capturePrefillText}
-              onPrefilledTextConsumed={() => setCapturePrefillText("")}
-            />
-          )}
-          {activeTab === "ledger" && <LedgerPanel token={auth.token} user={auth.user} />}
-          {activeTab === "insights" && <InsightsPanel token={auth.token} />}
-          {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
-          {activeTab === "settings" && <SettingsPanel token={auth.token} user={auth.user} />}
-        </div>
-      </section>
-      <button
-        type="button"
-        className="quick-add-fab"
-        onClick={() => {
-          setQuickAddSource("fab");
-          setQuickAddOpen(true);
-        }}
-        aria-label="Quick add expense"
-      >
-        +
-      </button>
-      <QuickAddModal
-        open={quickAddOpen}
-        token={auth.token}
-        source={quickAddSource}
-        onClose={() => setQuickAddOpen(false)}
-        onRouteToCapture={(text) => {
-          setCapturePrefillText(text);
-          setActiveTab("capture");
-          setQuickAddOpen(false);
-        }}
-        onNotify={(text) => setGlobalNotice(text)}
-      />
-    </main>
+        </section>
+        <button
+          type="button"
+          className="quick-add-fab"
+          onClick={() => setQuickAddOpen(true)}
+          aria-label="Quick add expense"
+        >
+          +
+        </button>
+        <QuickAddModal
+          open={quickAddOpen}
+          token={auth.token}
+          onClose={() => setQuickAddOpen(false)}
+          onRouteToCapture={(text) => {
+            setCapturePrefillText(text);
+            setActiveTab("capture");
+            setQuickAddOpen(false);
+          }}
+          onNotify={(text) => setGlobalNotice(text)}
+        />
+      </main>
+    </RuntimeErrorBoundary>
   );
 }
 
-function Header({ user, onQuickAdd, onLogout }) {
+function Header({ user, onQuickAdd, onOpenSettings, settingsActive = false, onLogout }) {
   return (
     <header className="topbar">
       <div>
@@ -2539,6 +3055,18 @@ function Header({ user, onQuickAdd, onLogout }) {
         <h2>Household Finance Workspace</h2>
       </div>
       <div className="topbar-actions">
+        {user && (
+          <button
+            className={settingsActive ? "settings-trigger active" : "settings-trigger"}
+            onClick={onOpenSettings}
+            type="button"
+            aria-label="Open settings"
+          >
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M19.43 12.98a7.96 7.96 0 0 0 .05-.98 7.96 7.96 0 0 0-.05-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.2 7.2 0 0 0-1.7-.98l-.38-2.65A.5.5 0 0 0 14.1 2h-4a.5.5 0 0 0-.49.42l-.38 2.65a7.2 7.2 0 0 0-1.7.98l-2.49-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65a7.96 7.96 0 0 0-.05.98c0 .33.02.66.05.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46a.5.5 0 0 0 .6.22l2.49-1c.53.4 1.1.73 1.7.98l.38 2.65a.5.5 0 0 0 .49.42h4a.5.5 0 0 0 .49-.42l.38-2.65c.6-.25 1.17-.58 1.7-.98l2.49 1a.5.5 0 0 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z" />
+            </svg>
+          </button>
+        )}
         {user && (
           <button className="btn-main quick-add-trigger" onClick={onQuickAdd} type="button">
             Quick Add
