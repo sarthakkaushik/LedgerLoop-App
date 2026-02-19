@@ -34,6 +34,10 @@ from app.schemas.expense import (
     ExpenseDraft,
     ExpenseLogRequest,
     ExpenseLogResponse,
+    ExpenseRecurringUpdateRequest,
+    ExpenseRecurringUpdateResponse,
+    RecurringExpenseCreateRequest,
+    RecurringExpenseCreateResponse,
 )
 from app.services.audio.groq_transcription import (
     GroqTranscriptionConfigError,
@@ -114,10 +118,13 @@ def _to_expense_feed_item(expense: Expense, logged_by_name: str) -> ExpenseFeedI
 def _build_expense_filters(
     household_id: UUID,
     status_filter: Literal["confirmed", "draft", "all"],
+    recurring_only: bool = False,
 ) -> list:
     filters = [Expense.household_id == household_id]
     if status_filter != "all":
         filters.append(Expense.status == ExpenseStatus(status_filter))
+    if recurring_only:
+        filters.append(Expense.is_recurring.is_(True))
     return filters
 
 
@@ -514,17 +521,78 @@ async def confirm_expenses(
     )
 
 
+@router.post(
+    "/recurring",
+    response_model=RecurringExpenseCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_recurring_expense(
+    payload: RecurringExpenseCreateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RecurringExpenseCreateResponse:
+    cleaned_currency = payload.currency.strip().upper()
+    if not cleaned_currency:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Currency is required.",
+        )
+
+    category_lookup, subcategory_lookup = await _load_taxonomy_lookup(session, user.household_id)
+    if "other" not in category_lookup:
+        category_lookup["other"] = "Other"
+
+    resolved_category, resolved_subcategory, warnings = _normalize_taxonomy_selection(
+        category=payload.category,
+        subcategory=payload.subcategory,
+        category_lookup=category_lookup,
+        subcategory_lookup=subcategory_lookup,
+    )
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    expense = Expense(
+        household_id=user.household_id,
+        logged_by_user_id=user.id,
+        amount=payload.amount,
+        currency=cleaned_currency,
+        category=resolved_category,
+        subcategory=resolved_subcategory,
+        description=_clean_optional_text(payload.description),
+        merchant_or_item=_clean_optional_text(payload.merchant_or_item),
+        date_incurred=_parse_date_incurred(payload.date_incurred, datetime.now(UTC).date()),
+        is_recurring=True,
+        confidence=1.0,
+        status=ExpenseStatus.CONFIRMED,
+        source_text="manual recurring expense",
+        updated_at=now,
+    )
+    session.add(expense)
+    await session.commit()
+    await session.refresh(expense)
+
+    return RecurringExpenseCreateResponse(
+        item=_to_expense_feed_item(expense, user.full_name),
+        message="Recurring expense added successfully.",
+        warnings=warnings,
+    )
+
+
 @router.get("/list", response_model=ExpenseFeedResponse)
 async def list_expenses(
     status_filter: Literal["confirmed", "draft", "all"] = Query(
         default="confirmed",
         alias="status",
     ),
+    recurring_only: bool = Query(default=False, alias="recurring_only"),
     limit: int = Query(default=100, ge=1, le=500),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ExpenseFeedResponse:
-    filters = _build_expense_filters(user.household_id, status_filter)
+    filters = _build_expense_filters(
+        user.household_id,
+        status_filter,
+        recurring_only=recurring_only,
+    )
 
     list_result = await session.execute(
         select(Expense)
@@ -562,10 +630,15 @@ async def export_expenses_csv(
         default="confirmed",
         alias="status",
     ),
+    recurring_only: bool = Query(default=False, alias="recurring_only"),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    filters = _build_expense_filters(user.household_id, status_filter)
+    filters = _build_expense_filters(
+        user.household_id,
+        status_filter,
+        recurring_only=recurring_only,
+    )
     list_result = await session.execute(
         select(Expense)
         .where(*filters)
@@ -618,11 +691,67 @@ async def export_expenses_csv(
             ]
         )
 
-    filename = f"expenses_{status_filter}_{datetime.now(UTC).date().isoformat()}.csv"
+    recurring_suffix = "_recurring" if recurring_only else ""
+    filename = f"expenses_{status_filter}{recurring_suffix}_{datetime.now(UTC).date().isoformat()}.csv"
     return Response(
         content=csv_buffer.getvalue(),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.patch("/{expense_id}/recurring", response_model=ExpenseRecurringUpdateResponse)
+async def update_expense_recurring(
+    expense_id: str,
+    payload: ExpenseRecurringUpdateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ExpenseRecurringUpdateResponse:
+    try:
+        expense_uuid = UUID(expense_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid expense_id",
+        ) from exc
+
+    expense_result = await session.execute(
+        select(Expense).where(
+            Expense.id == expense_uuid,
+            Expense.household_id == user.household_id,
+        )
+    )
+    expense = expense_result.scalar_one_or_none()
+    if not expense:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Expense not found in your household.",
+        )
+
+    if expense.logged_by_user_id != user.id and user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only update recurring flag for expenses you logged.",
+        )
+
+    expense.is_recurring = payload.is_recurring
+    expense.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    session.add(expense)
+    await session.commit()
+    await session.refresh(expense)
+
+    user_names = await _resolve_user_names(session, {expense.logged_by_user_id})
+    message = (
+        "Expense marked as recurring."
+        if payload.is_recurring
+        else "Expense removed from recurring."
+    )
+    return ExpenseRecurringUpdateResponse(
+        item=_to_expense_feed_item(
+            expense,
+            user_names.get(expense.logged_by_user_id, "Unknown"),
+        ),
+        message=message,
     )
 
 

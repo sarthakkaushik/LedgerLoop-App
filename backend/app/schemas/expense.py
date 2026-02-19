@@ -84,6 +84,31 @@ class ExpenseDeleteResponse(BaseModel):
     message: str
 
 
+class ExpenseRecurringUpdateRequest(BaseModel):
+    is_recurring: bool
+
+
+class ExpenseRecurringUpdateResponse(BaseModel):
+    item: ExpenseFeedItem
+    message: str
+
+
+class RecurringExpenseCreateRequest(BaseModel):
+    amount: float = Field(gt=0)
+    currency: str = Field(min_length=1, max_length=8, default="INR")
+    category: str | None = None
+    subcategory: str | None = None
+    description: str | None = None
+    merchant_or_item: str | None = None
+    date_incurred: str | None = None
+
+
+class RecurringExpenseCreateResponse(BaseModel):
+    item: ExpenseFeedItem
+    message: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 class DashboardDailyPoint(BaseModel):
     day: str
     total: float

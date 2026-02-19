@@ -143,16 +143,38 @@ export async function fetchDashboard(token, monthsBack = 6) {
   return apiRequest(`/expenses/dashboard?months_back=${monthsBack}`, { token });
 }
 
-export async function fetchExpenseFeed(token, { status = "confirmed", limit = 100 } = {}) {
+export async function fetchExpenseFeed(
+  token,
+  { status = "confirmed", limit = 100, recurringOnly = false } = {}
+) {
   const search = new URLSearchParams({
     status,
     limit: String(limit),
   });
+  if (recurringOnly) {
+    search.set("recurring_only", "true");
+  }
   return apiRequest(`/expenses/list?${search.toString()}`, { token });
 }
 
 export async function deleteExpense(token, expenseId) {
   return apiRequest(`/expenses/${expenseId}`, { method: "DELETE", token });
+}
+
+export async function updateExpenseRecurring(token, expenseId, isRecurring) {
+  return apiRequest(`/expenses/${expenseId}/recurring`, {
+    method: "PATCH",
+    token,
+    body: { is_recurring: Boolean(isRecurring) },
+  });
+}
+
+export async function createRecurringExpense(token, payload) {
+  return apiRequest("/expenses/recurring", {
+    method: "POST",
+    token,
+    body: payload,
+  });
 }
 
 export async function askAnalysis(token, text) {
@@ -163,8 +185,14 @@ export async function askAnalysis(token, text) {
   });
 }
 
-export async function downloadExpenseCsv(token, { status = "confirmed" } = {}) {
+export async function downloadExpenseCsv(
+  token,
+  { status = "confirmed", recurringOnly = false } = {}
+) {
   const search = new URLSearchParams({ status });
+  if (recurringOnly) {
+    search.set("recurring_only", "true");
+  }
   const response = await fetch(`${getApiBaseUrl()}/expenses/export.csv?${search.toString()}`, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },

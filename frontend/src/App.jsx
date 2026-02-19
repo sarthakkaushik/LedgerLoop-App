@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import {
   askAnalysis,
   confirmExpenses,
+  createRecurringExpense,
   createTaxonomyCategory,
   createTaxonomySubcategory,
   createInviteCode,
@@ -22,6 +23,7 @@ import {
   parseExpenseText,
   registerUser,
   transcribeExpenseAudio,
+  updateExpenseRecurring,
   updateTaxonomyCategory,
   updateTaxonomySubcategory,
 } from "./api";
@@ -29,6 +31,7 @@ import {
 const tabs = [
   { id: "capture", label: "Capture" },
   { id: "ledger", label: "Ledger" },
+  { id: "recurring", label: "Recurring" },
   { id: "insights", label: "Insights" },
   { id: "people", label: "People & Access" },
 ];
@@ -106,6 +109,10 @@ function normalizeTaxonomyName(value) {
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
+}
+
+function todayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 const RECORDER_MIME_TYPES = [
@@ -1746,11 +1753,325 @@ function HouseholdPanel({ token, user }) {
   );
 }
 
+function RecurringPanel({ token, user }) {
+  const [feed, setFeed] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [deletingExpenseId, setDeletingExpenseId] = useState(null);
+  const [expenseToDelete, setExpenseToDelete] = useState(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [warnings, setWarnings] = useState([]);
+  const [form, setForm] = useState({
+    amount: "",
+    currency: "INR",
+    category: "",
+    subcategory: "",
+    description: "",
+    merchant_or_item: "",
+    date_incurred: todayIsoDate(),
+  });
+
+  async function loadRecurringData() {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchExpenseFeed(token, {
+        status: "confirmed",
+        limit: 300,
+        recurringOnly: true,
+      });
+      setFeed(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadRecurringData();
+  }, [token]);
+
+  function updateForm(field, value) {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  async function handleAddRecurringExpense() {
+    const amount = Number(form.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError("Please enter a valid amount greater than zero.");
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    setMessage("");
+    setWarnings([]);
+    try {
+      const data = await createRecurringExpense(token, {
+        amount,
+        currency: String(form.currency || "").trim().toUpperCase() || "INR",
+        category: form.category || null,
+        subcategory: form.subcategory || null,
+        description: form.description || null,
+        merchant_or_item: form.merchant_or_item || null,
+        date_incurred: form.date_incurred || null,
+      });
+      setMessage(data.message || "Recurring expense added.");
+      setWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      setForm((prev) => ({
+        ...prev,
+        amount: "",
+        description: "",
+        merchant_or_item: "",
+        date_incurred: todayIsoDate(),
+      }));
+      await loadRecurringData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeleteExpense() {
+    if (!expenseToDelete) return;
+    setDeletingExpenseId(expenseToDelete.id);
+    setError("");
+    setMessage("");
+    try {
+      const data = await deleteExpense(token, expenseToDelete.id);
+      setMessage(data.message || "Expense deleted.");
+      setExpenseToDelete(null);
+      await loadRecurringData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingExpenseId(null);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <div className="dashboard-header">
+        <h2>Recurring Expenses</h2>
+        <button className="btn-ghost" type="button" onClick={loadRecurringData} disabled={loading}>
+          Refresh
+        </button>
+      </div>
+      <p className="hint">Track monthly bills like rent, school fees, subscriptions, and other repeat spends.</p>
+      {error && <p className="form-error">{error}</p>}
+      {message && <p className="form-ok">{message}</p>}
+      {warnings.length > 0 && (
+        <ul className="taxonomy-warnings">
+          {warnings.map((warning, index) => (
+            <li key={`${warning}-${index}`}>{warning}</li>
+          ))}
+        </ul>
+      )}
+
+      <article className="result-card recurring-entry-card">
+        <div className="row draft-header">
+          <h3>Add Recurring Expense</h3>
+          <button className="btn-main" type="button" onClick={handleAddRecurringExpense} disabled={saving}>
+            {saving ? "Adding..." : "Add Recurring"}
+          </button>
+        </div>
+        <div className="row-grid recurring-form-grid">
+          <label>
+            Amount
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.amount}
+              onChange={(e) => updateForm("amount", e.target.value)}
+              placeholder="0.00"
+            />
+          </label>
+          <label>
+            Currency
+            <input
+              value={form.currency}
+              onChange={(e) => updateForm("currency", e.target.value.toUpperCase())}
+              placeholder="INR"
+            />
+          </label>
+          <label>
+            Date
+            <input
+              type="date"
+              value={form.date_incurred}
+              onChange={(e) => updateForm("date_incurred", e.target.value)}
+            />
+          </label>
+          <label>
+            Category
+            <input
+              value={form.category}
+              onChange={(e) => updateForm("category", e.target.value)}
+              placeholder="Rent, School Fees, Utilities"
+            />
+          </label>
+          <label>
+            Subcategory
+            <input
+              value={form.subcategory}
+              onChange={(e) => updateForm("subcategory", e.target.value)}
+              placeholder="Optional"
+            />
+          </label>
+          <label>
+            Description
+            <input
+              value={form.description}
+              onChange={(e) => updateForm("description", e.target.value)}
+              placeholder="Monthly rent"
+            />
+          </label>
+          <label>
+            Merchant / Item
+            <input
+              value={form.merchant_or_item}
+              onChange={(e) => updateForm("merchant_or_item", e.target.value)}
+              placeholder="Landlord / School"
+            />
+          </label>
+        </div>
+        <label className="inline-toggle">
+          <input type="checkbox" checked readOnly disabled />
+          Recurring expense
+        </label>
+      </article>
+
+      {loading ? (
+        <PanelSkeleton rows={7} />
+      ) : (
+        <article className="result-card household-ledger">
+          <div className="row draft-header">
+            <h3>Marked Recurring</h3>
+            <p className="hint">Total: {feed?.total_count ?? 0}</p>
+          </div>
+          {!feed?.items?.length ? (
+            <p>No recurring expenses yet.</p>
+          ) : (
+            <>
+              <div className="table-wrap desktop-table-only">
+                <table className="analytics-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Logged By</th>
+                      <th>Category</th>
+                      <th>Description</th>
+                      <th>Amount</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {feed.items.map((item) => {
+                      const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                      return (
+                        <tr key={item.id}>
+                          <td>{item.date_incurred}</td>
+                          <td>{item.logged_by_name}</td>
+                          <td>{item.category || "Other"}</td>
+                          <td>{item.description || item.merchant_or_item || "-"}</td>
+                          <td>{formatCurrencyValue(item.amount, item.currency)}</td>
+                          <td>
+                            {canDelete && (
+                              <button
+                                type="button"
+                                className="btn-danger"
+                                onClick={() => setExpenseToDelete(item)}
+                                disabled={deletingExpenseId === item.id}
+                              >
+                                {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mobile-data-list mobile-cards-only">
+                {feed.items.map((item) => {
+                  const canDelete = user?.role === "admin" || item.logged_by_user_id === user?.id;
+                  return (
+                    <article className="mobile-data-card" key={`recurring-mobile-${item.id}`}>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Date</span>
+                        <strong className="mobile-data-value">{item.date_incurred}</strong>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Logged By</span>
+                        <span className="mobile-data-value">{item.logged_by_name}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Category</span>
+                        <span className="mobile-data-value">{item.category || "Other"}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Description</span>
+                        <span className="mobile-data-value">{item.description || item.merchant_or_item || "-"}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Amount</span>
+                        <strong className="mobile-data-value">
+                          {formatCurrencyValue(item.amount, item.currency)}
+                        </strong>
+                      </div>
+                      {canDelete && (
+                        <div className="mobile-data-actions">
+                          <button
+                            type="button"
+                            className="btn-danger"
+                            onClick={() => setExpenseToDelete(item)}
+                            disabled={deletingExpenseId === item.id}
+                          >
+                            {deletingExpenseId === item.id ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </article>
+      )}
+
+      <ConfirmModal
+        open={Boolean(expenseToDelete)}
+        title="Delete this recurring expense?"
+        description={
+          expenseToDelete
+            ? `Delete recurring expense on ${expenseToDelete.date_incurred} for ${formatCurrencyValue(
+                expenseToDelete.amount,
+                expenseToDelete.currency
+              )}?`
+            : ""
+        }
+        confirmLabel="Delete Expense"
+        busy={Boolean(expenseToDelete && deletingExpenseId === expenseToDelete.id)}
+        onCancel={() => setExpenseToDelete(null)}
+        onConfirm={handleDeleteExpense}
+      />
+    </section>
+  );
+}
+
 function LedgerPanel({ token, user }) {
   const [feed, setFeed] = useState(null);
   const [statusFilter, setStatusFilter] = useState("confirmed");
   const [loading, setLoading] = useState(false);
   const [deletingExpenseId, setDeletingExpenseId] = useState(null);
+  const [updatingRecurringId, setUpdatingRecurringId] = useState(null);
   const [downloadingCsv, setDownloadingCsv] = useState(false);
   const [expenseToDelete, setExpenseToDelete] = useState(null);
   const [message, setMessage] = useState("");
@@ -1801,6 +2122,21 @@ function LedgerPanel({ token, user }) {
       setError(err.message);
     } finally {
       setDeletingExpenseId(null);
+    }
+  }
+
+  async function handleToggleRecurring(item, nextValue) {
+    setUpdatingRecurringId(item.id);
+    setError("");
+    setMessage("");
+    try {
+      const data = await updateExpenseRecurring(token, item.id, nextValue);
+      setMessage(data.message || "Recurring status updated.");
+      await loadLedgerData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setUpdatingRecurringId(null);
     }
   }
 
@@ -1855,6 +2191,7 @@ function LedgerPanel({ token, user }) {
                       <th>Subcategory</th>
                       <th>Description</th>
                       <th>Amount</th>
+                      <th>Recurring</th>
                       <th>Status</th>
                       <th>Actions</th>
                     </tr>
@@ -1870,6 +2207,21 @@ function LedgerPanel({ token, user }) {
                           <td>{item.subcategory || "-"}</td>
                           <td>{item.description || item.merchant_or_item || "-"}</td>
                           <td>{formatCurrencyValue(item.amount, item.currency)}</td>
+                          <td>
+                            <label className="inline-toggle ledger-recurring-toggle">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(item.is_recurring)}
+                                onChange={(e) => handleToggleRecurring(item, e.target.checked)}
+                                disabled={updatingRecurringId === item.id}
+                              />
+                              {updatingRecurringId === item.id
+                                ? "Saving..."
+                                : item.is_recurring
+                                  ? "Yes"
+                                  : "No"}
+                            </label>
+                          </td>
                           <td>{item.status}</td>
                           <td>
                             {canDelete && (
@@ -1920,6 +2272,24 @@ function LedgerPanel({ token, user }) {
                         <strong className="mobile-data-value">
                           {formatCurrencyValue(item.amount, item.currency)}
                         </strong>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Recurring</span>
+                        <span className="mobile-data-value">
+                          <label className="inline-toggle ledger-recurring-toggle mobile-recurring-toggle">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(item.is_recurring)}
+                              onChange={(e) => handleToggleRecurring(item, e.target.checked)}
+                              disabled={updatingRecurringId === item.id}
+                            />
+                            {updatingRecurringId === item.id
+                              ? "Saving..."
+                              : item.is_recurring
+                                ? "Yes"
+                                : "No"}
+                          </label>
+                        </span>
                       </div>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Status</span>
@@ -3018,6 +3388,7 @@ export default function App() {
               />
             )}
             {activeTab === "ledger" && <LedgerPanel token={auth.token} user={auth.user} />}
+            {activeTab === "recurring" && <RecurringPanel token={auth.token} user={auth.user} />}
             {activeTab === "insights" && <InsightsPanel token={auth.token} />}
             {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
             {activeTab === "settings" && <SettingsPanel token={auth.token} user={auth.user} />}

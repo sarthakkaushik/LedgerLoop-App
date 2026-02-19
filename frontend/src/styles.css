@@ -1032,6 +1032,15 @@ input[type="checkbox"] {
   width: auto;
 }
 
+.ledger-recurring-toggle {
+  margin-top: 0;
+  justify-content: flex-start;
+}
+
+.mobile-recurring-toggle {
+  justify-content: flex-end;
+}
+
 .dashboard-header {
   display: flex;
   justify-content: space-between;

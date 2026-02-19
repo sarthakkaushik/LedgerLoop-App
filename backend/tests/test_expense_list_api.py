@@ -67,6 +67,7 @@ async def log_and_confirm_expense(
     category: str,
     date_incurred: date,
     idempotency_key: str,
+    is_recurring: bool = False,
 ) -> None:
     headers = {"Authorization": f"Bearer {token}"}
     log_res = await client.post("/expenses/log", json={"text": text}, headers=headers)
@@ -83,6 +84,7 @@ async def log_and_confirm_expense(
                     "amount": amount,
                     "category": category,
                     "date_incurred": str(date_incurred),
+                    "is_recurring": is_recurring,
                 }
             ],
         },
@@ -287,5 +289,128 @@ async def test_expense_list_all_status_includes_drafts(client: AsyncClient) -> N
         statuses = {item["status"] for item in all_payload["items"]}
         assert "confirmed" in statuses
         assert "draft" in statuses
+    finally:
+        app.dependency_overrides.pop(get_expense_parser, None)
+
+
+@pytest.mark.asyncio
+async def test_expense_list_recurring_only_filter(client: AsyncClient) -> None:
+    from app.main import app
+
+    app.dependency_overrides[get_expense_parser] = lambda: FakeParser()
+    try:
+        token = await register_user(client, "recurring.list@example.com", "Family Recurring")
+        today = date.today()
+
+        await log_and_confirm_expense(
+            client,
+            token,
+            "One-time groceries",
+            amount=250.0,
+            category="Groceries",
+            date_incurred=today,
+            idempotency_key="recurring-filter-1",
+            is_recurring=False,
+        )
+        await log_and_confirm_expense(
+            client,
+            token,
+            "Monthly rent",
+            amount=1800.0,
+            category="Bills",
+            date_incurred=today,
+            idempotency_key="recurring-filter-2",
+            is_recurring=True,
+        )
+
+        recurring_res = await client.get(
+            "/expenses/list?status=confirmed&recurring_only=true",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert recurring_res.status_code == 200
+        payload = recurring_res.json()
+        assert payload["total_count"] == 1
+        assert len(payload["items"]) == 1
+        assert payload["items"][0]["is_recurring"] is True
+    finally:
+        app.dependency_overrides.pop(get_expense_parser, None)
+
+
+@pytest.mark.asyncio
+async def test_create_recurring_expense_endpoint(client: AsyncClient) -> None:
+    token = await register_user(client, "recurring.create@example.com", "Family Recurring Create")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create_res = await client.post(
+        "/expenses/recurring",
+        headers=headers,
+        json={
+            "amount": 2200.0,
+            "currency": "INR",
+            "category": "Bills",
+            "description": "School fee",
+            "merchant_or_item": "School",
+            "date_incurred": str(date.today()),
+        },
+    )
+    assert create_res.status_code == 201
+    created_payload = create_res.json()
+    item = created_payload["item"]
+    assert item["is_recurring"] is True
+    assert item["status"] == "confirmed"
+    assert item["amount"] == 2200.0
+
+    list_res = await client.get(
+        "/expenses/list?status=confirmed&recurring_only=true",
+        headers=headers,
+    )
+    assert list_res.status_code == 200
+    items = list_res.json()["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == item["id"]
+
+
+@pytest.mark.asyncio
+async def test_update_expense_recurring_flag(client: AsyncClient) -> None:
+    from app.main import app
+
+    app.dependency_overrides[get_expense_parser] = lambda: FakeParser()
+    try:
+        token = await register_user(client, "recurring.toggle@example.com", "Family Recurring Toggle")
+        headers = {"Authorization": f"Bearer {token}"}
+        today = date.today()
+
+        await log_and_confirm_expense(
+            client,
+            token,
+            "Water bill",
+            amount=600.0,
+            category="Bills",
+            date_incurred=today,
+            idempotency_key="recurring-toggle-1",
+            is_recurring=False,
+        )
+
+        list_res = await client.get("/expenses/list?status=confirmed", headers=headers)
+        assert list_res.status_code == 200
+        expense_id = list_res.json()["items"][0]["id"]
+
+        patch_res = await client.patch(
+            f"/expenses/{expense_id}/recurring",
+            headers=headers,
+            json={"is_recurring": True},
+        )
+        assert patch_res.status_code == 200
+        patched_item = patch_res.json()["item"]
+        assert patched_item["is_recurring"] is True
+
+        recurring_res = await client.get(
+            "/expenses/list?status=confirmed&recurring_only=true",
+            headers=headers,
+        )
+        assert recurring_res.status_code == 200
+        recurring_items = recurring_res.json()["items"]
+        assert len(recurring_items) == 1
+        assert recurring_items[0]["id"] == expense_id
     finally:
         app.dependency_overrides.pop(get_expense_parser, None)
