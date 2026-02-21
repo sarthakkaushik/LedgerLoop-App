@@ -4383,6 +4383,27 @@ a:focus-visible {
   color: #fffffe;
 }
 
+.app-shell-unified .assistant-bubble.markdown-content table {
+  border: 1px solid #3a3951;
+  border-radius: 10px;
+  background: #1f1e31;
+}
+
+.app-shell-unified .assistant-bubble.markdown-content th,
+.app-shell-unified .assistant-bubble.markdown-content td {
+  border: 1px solid #3a3951;
+}
+
+.app-shell-unified .assistant-bubble.markdown-content th {
+  background: #2a2940;
+  color: #f7c59f;
+}
+
+.app-shell-unified .assistant-bubble.markdown-content td {
+  background: transparent;
+  color: #f4f5ff;
+}
+
 .app-shell-unified .budget-overview-status-divider,
 .app-shell-unified .budget-overview-status-secondary {
   color: #d0d2e6;
