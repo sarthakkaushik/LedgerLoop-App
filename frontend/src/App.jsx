@@ -4189,56 +4189,6 @@ function DashboardPanel({ token, embedded = false }) {
                 )}
               </article>
 
-              <article className="result-card insights-result-card insights-card-person">
-                <h3>Spending by Person</h3>
-                {dashboard.user_split.length === 0 ? (
-                  <p>No user data yet.</p>
-                ) : (
-                  <div className="insights-person-chart">
-                    <div className="insights-person-y-axis">
-                      {personAxisTicks.map((tick, index) => (
-                        <span
-                          key={`person-axis-${index}`}
-                          style={{ bottom: `calc(${(1 - tick.ratio) * 100}% - 9px)` }}
-                        >
-                          {formatCompactCurrencyValue(tick.value, dashboardCurrency)}
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="insights-person-plot">
-                      {personAxisTicks.map((tick, index) => (
-                        <span
-                          key={`person-grid-${index}`}
-                          className="insights-person-grid-line"
-                          style={{ bottom: `${(1 - tick.ratio) * 100}%` }}
-                          aria-hidden="true"
-                        />
-                      ))}
-
-                      <div className="insights-person-bars">
-                        {dashboard.user_split.map((item, index) => (
-                          <article className="insights-person-bar" key={item.user_id}>
-                            <div className="insights-person-bar-track">
-                              <div
-                                className="insights-person-bar-fill"
-                                style={{
-                                  height: `${Math.max((item.total / maxUserTotal) * 100, 4)}%`,
-                                  background: INSIGHTS_PERSON_COLORS[index % INSIGHTS_PERSON_COLORS.length],
-                                }}
-                              />
-                            </div>
-                            <p className="insights-person-bar-name">{item.user_name}</p>
-                            <p className="insights-person-bar-value">
-                              {formatCompactCurrencyValue(item.total, dashboardCurrency)}
-                            </p>
-                          </article>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </article>
             </div>
 
             <div className="insights-category-grid">
@@ -4350,6 +4300,57 @@ function DashboardPanel({ token, embedded = false }) {
                       ))}
                     </div>
                   </>
+                )}
+              </article>
+
+              <article className="result-card insights-result-card insights-card-person">
+                <h3>Spending by Person</h3>
+                {dashboard.user_split.length === 0 ? (
+                  <p>No user data yet.</p>
+                ) : (
+                  <div className="insights-person-chart">
+                    <div className="insights-person-y-axis">
+                      {personAxisTicks.map((tick, index) => (
+                        <span
+                          key={`person-axis-${index}`}
+                          style={{ bottom: `calc(${(1 - tick.ratio) * 100}% - 9px)` }}
+                        >
+                          {formatCompactCurrencyValue(tick.value, dashboardCurrency)}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="insights-person-plot">
+                      {personAxisTicks.map((tick, index) => (
+                        <span
+                          key={`person-grid-${index}`}
+                          className="insights-person-grid-line"
+                          style={{ bottom: `${(1 - tick.ratio) * 100}%` }}
+                          aria-hidden="true"
+                        />
+                      ))}
+
+                      <div className="insights-person-bars">
+                        {dashboard.user_split.map((item, index) => (
+                          <article className="insights-person-bar" key={item.user_id}>
+                            <div className="insights-person-bar-track">
+                              <div
+                                className="insights-person-bar-fill"
+                                style={{
+                                  height: `${Math.max((item.total / maxUserTotal) * 100, 4)}%`,
+                                  background: INSIGHTS_PERSON_COLORS[index % INSIGHTS_PERSON_COLORS.length],
+                                }}
+                              />
+                            </div>
+                            <p className="insights-person-bar-name">{item.user_name}</p>
+                            <p className="insights-person-bar-value">
+                              {formatCompactCurrencyValue(item.total, dashboardCurrency)}
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 )}
               </article>
 

@@ -1948,18 +1948,25 @@ a:focus-visible {
 }
 
 .insights-layout-main {
-  grid-template-columns: minmax(0, 1.65fr) minmax(320px, 1fr);
+  grid-template-columns: 1fr;
 }
 
 .insights-category-grid {
-  grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .insights-card-daily,
-.insights-card-person,
 .insights-pie-card,
 .insights-card-category {
   grid-column: 1 / -1;
+}
+
+.insights-card-person {
+  grid-column: auto;
+}
+
+.insights-category-grid .insights-card-category {
+  grid-column: auto;
 }
 
 .insights-result-card {
