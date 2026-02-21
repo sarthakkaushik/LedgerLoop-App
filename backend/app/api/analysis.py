@@ -287,21 +287,24 @@ def _build_friendly_row_summary(
         else ""
     )
 
-    summary = person or "Household member"
-    details: list[str] = []
+    category_label = (
+        f"{category} > {subcategory}"
+        if category and subcategory and subcategory.lower() != category.lower()
+        else category
+    )
+    subject = person or "A household member"
+    statement_parts: list[str] = []
     if amount_text:
-        details.append(amount_text)
-    if category:
-        details.append(
-            f"{category} > {subcategory}" if subcategory and subcategory.lower() != category.lower() else category
-        )
+        statement_parts.append(f"spent {amount_text}")
+    if category_label:
+        statement_parts.append(f"in {category_label}")
     if description:
-        details.append(description)
+        statement_parts.append(f"for {description}")
     if date_text:
-        details.append(date_text)
-    if details:
-        summary += ": " + ", ".join(details)
-    return summary
+        statement_parts.append(f"on {date_text}")
+    if statement_parts:
+        return f"{subject} {' '.join(statement_parts)}."
+    return f"{subject} logged an expense."
 
 
 def _build_friendly_answer(
@@ -310,22 +313,46 @@ def _build_friendly_answer(
     rows: list[list[str | float | int]],
 ) -> str:
     if not rows:
-        return "I could not find matching confirmed expenses for that request."
+        return (
+            "I could not find matching confirmed expenses for that request. "
+            "If you want, I can try a wider date range or include draft entries."
+        )
     preview_count = min(3, len(rows))
-    lines = [f'Here is a clear summary for "{question}":']
+    lines = [f'Sure - here is what I found for "{question}":']
     for row in rows[:preview_count]:
         lines.append(f"- {_build_friendly_row_summary(columns, row)}")
     if len(rows) > preview_count:
-        lines.append(f"- Plus {len(rows) - preview_count} more row(s) in the table below.")
+        lines.append(
+            f"I found {len(rows)} matching rows in total, and showed the first {preview_count} above."
+        )
     return "\n".join(lines)
+
+
+def _contains_markdown_table(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\|.+\|\s*\n\|\s*[-:| ]+\|\s*\n\|.+\|",
+            text,
+        )
+    )
 
 
 def _looks_like_raw_table_dump(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return True
+    if _contains_markdown_table(stripped):
+        return False
     low = stripped.lower()
-    return stripped.count("|") >= 12 or "user_id" in low or "------" in stripped
+    if "------" in stripped and "|" in stripped:
+        return True
+    if any(token in low for token in ("user_id", "expense_id", "household_id", "logged_by_user_id")):
+        return True
+    if stripped.startswith("[{") or stripped.startswith("{'") or stripped.startswith("[("):
+        return True
+    if "row(" in low or "mappings()" in low:
+        return True
+    return False
 
 
 def _finalize_user_answer(

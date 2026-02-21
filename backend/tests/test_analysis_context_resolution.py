@@ -2,10 +2,13 @@ from datetime import date
 
 from app.api.analysis import (
     _augment_question_with_context,
+    _build_friendly_answer,
     _build_sql_validator,
     _extract_description_phrase,
     _extract_time_window,
+    _finalize_user_answer,
     _has_relative_time_intent,
+    _looks_like_raw_table_dump,
     _graph_should_retry,
     _resolve_alias,
 )
@@ -130,3 +133,51 @@ def test_graph_retry_path_for_zero_aggregate_primary_rows() -> None:
         }
     )
     assert route == "retry_with_fuzzy"
+
+
+def test_build_friendly_answer_is_conversational_and_personalized() -> None:
+    columns = [
+        "logged_by",
+        "amount",
+        "currency",
+        "category",
+        "subcategory",
+        "description",
+        "date_incurred",
+    ]
+    rows = [
+        ["Pooja Sharma", 1200, "INR", "Food", "Dining Out", "Lunch", "2026-02-21"],
+    ]
+    answer = _build_friendly_answer("How much did we spend this month?", columns, rows)
+    assert 'Sure - here is what I found for "How much did we spend this month?":' in answer
+    assert "Pooja Sharma spent 1,200.00 INR in Food > Dining Out for Lunch on Feb 21, 2026." in answer
+    assert "Household member:" not in answer
+
+
+def test_markdown_table_answer_not_treated_as_raw_dump() -> None:
+    text = (
+        "Sure, here is the monthly spend summary.\n\n"
+        "| member | amount |\n"
+        "| --- | --- |\n"
+        "| Pooja Sharma | 1200 |\n"
+    )
+    assert _looks_like_raw_table_dump(text) is False
+
+
+def test_finalize_user_answer_keeps_conversational_markdown_answer() -> None:
+    raw_answer = (
+        "Sure, here is what I found this month.\n\n"
+        "| member | amount |\n"
+        "| --- | --- |\n"
+        "| Pooja Sharma | 1200 |\n"
+    )
+    finalized = _finalize_user_answer(
+        question="How much did we spend this month?",
+        raw_answer=raw_answer,
+        columns=["member", "amount"],
+        rows=[["Pooja Sharma", 1200]],
+        success=True,
+    )
+    assert "Sure, here is what I found this month." in finalized
+    assert "| member | amount |" in finalized
+    assert "Here is a clear summary for" not in finalized
