@@ -35,8 +35,8 @@ You are a SQL generator for PostgreSQL.
 - The user prompt may include sections:
   - `Known household members`
   - `Known household categories`
+  - `Column usage hints`
   - `Resolved context hints`
-  - Temporal range hints in `Resolved context hints`
   Use these as authoritative context for disambiguation and SQL filtering.
 
 ## Database schema (JSON)
@@ -54,7 +54,8 @@ You are a SQL generator for PostgreSQL.
 - Use case-insensitive checks with explicit text cast when needed:
   LOWER(CAST(column AS TEXT))
 - Respect explicit constraints exactly (top N, last N days/months, this month, etc).
-- If a temporal range is provided in context hints, apply it directly on `date_incurred` using inclusive bounds.
+- For relative time phrases (last/past/this week/month), use `date_incurred` and prefer reference-date hints
+  from context when provided.
 - Currency is INR unless the user asks otherwise.
 - When the question is about subcategories, group/filter on both `category` and `subcategory`.
 - For uncategorized subcategory requests, use `subcategory IS NULL`.

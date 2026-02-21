@@ -84,6 +84,10 @@ _RELATIVE_TIME_WINDOW_RE = re.compile(
     r"(day|days|week|weeks|month|months)\b",
     flags=re.IGNORECASE,
 )
+_RELATIVE_TIME_KEYWORDS_RE = re.compile(
+    r"\b(?:today|yesterday|this\s+week|last\s+week|this\s+month|last\s+month)\b",
+    flags=re.IGNORECASE,
+)
 _EMPTY_HINTS: list[str] = []
 
 
@@ -533,6 +537,11 @@ def _build_time_window_hint(window: _ResolvedTimeWindow, *, timezone_name: str) 
     )
 
 
+def _has_relative_time_intent(question: str) -> bool:
+    lowered = question.lower()
+    return bool(_RELATIVE_TIME_WINDOW_RE.search(lowered) or _RELATIVE_TIME_KEYWORDS_RE.search(lowered))
+
+
 def _match_score(fragment: str, candidate: str) -> float:
     fragment_norm = _normalize_fragment(fragment)
     candidate_norm = _normalize_fragment(candidate)
@@ -611,19 +620,48 @@ async def _load_resolution_candidates(
     return member_names, categories, subcategories
 
 
+async def _load_household_date_bounds(
+    session: AsyncSession,
+    *,
+    household_id: UUID,
+) -> tuple[str | None, str | None]:
+    bounds_result = await session.execute(
+        text(
+            """
+            SELECT
+              CAST(MIN(e.date_incurred) AS TEXT) AS min_date_incurred,
+              CAST(MAX(e.date_incurred) AS TEXT) AS max_date_incurred
+            FROM expenses e
+            WHERE CAST(e.household_id AS TEXT) = :household_id
+            """
+        ),
+        {"household_id": str(household_id)},
+    )
+    bounds_row = bounds_result.mappings().first() or {}
+    min_date = str(bounds_row.get("min_date_incurred") or "").strip() or None
+    max_date = str(bounds_row.get("max_date_incurred") or "").strip() or None
+    return min_date, max_date
+
+
 async def _resolve_question_context(
     *,
     question: str,
     session: AsyncSession,
     household_id: UUID,
-    today: date,
     timezone_name: str,
 ) -> tuple[list[str], bool, list[str], list[str], _ResolvedTimeWindow | None]:
     hints: list[str] = []
     should_fuzzy_retry = False
-    time_window = _extract_time_window(question, today=today)
-    if time_window is not None:
-        hints.append(_build_time_window_hint(time_window, timezone_name=timezone_name))
+    time_window = None
+    min_date, max_date = await _load_household_date_bounds(session, household_id=household_id)
+    if min_date and max_date:
+        hints.append(f"Expense dates available in `date_incurred` run from '{min_date}' to '{max_date}'.")
+    if _has_relative_time_intent(question) and max_date:
+        hints.append(
+            "Relative-time request detected. Prefer `date_incurred` filtering and use household reference date "
+            f"'{max_date}' (timezone '{timezone_name}') unless the user gave an explicit date."
+        )
+        should_fuzzy_retry = True
     member_names, categories, subcategories = await _load_resolution_candidates(
         session,
         household_id=household_id,
@@ -712,6 +750,16 @@ def _augment_question_with_context(
     if household_category_names:
         category_lines = "\n".join(f"- {name}" for name in household_category_names[:30])
         sections.append(f"Known household categories:\n{category_lines}")
+    sections.append(
+        "Column usage hints:\n"
+        "- Person/member name: logged_by\n"
+        "- Category: category\n"
+        "- Subcategory: subcategory\n"
+        "- Free text: description + merchant_or_item\n"
+        "- Expense date: date_incurred\n"
+        "- Amount: amount\n"
+        "- Status: status"
+    )
     if hints:
         hint_lines = "\n".join(f"- {hint}" for hint in hints)
         sections.append(f"Resolved context hints:\n{hint_lines}")
@@ -763,56 +811,12 @@ def _merge_agent_results(primary: SQLAgentResult, fallback: SQLAgentResult) -> S
     )
 
 
-def _sql_has_date_incurred_filter(sql_query: str) -> bool:
-    try:
-        import sqlglot
-        from sqlglot import exp
-    except Exception:
-        low = sql_query.lower()
-        where_clauses = re.findall(
-            r"\bwhere\b(.+?)(?:\bgroup\s+by\b|\border\s+by\b|\bhaving\b|\blimit\b|\boffset\b|\bunion\b|$)",
-            low,
-            flags=re.DOTALL,
-        )
-        return any("date_incurred" in clause for clause in where_clauses)
-
-    try:
-        tree = sqlglot.parse_one(sql_query, read="postgres")
-    except Exception:
-        return False
-
-    for where_node in tree.find_all(exp.Where):
-        for col in where_node.find_all(exp.Column):
-            if str(col.name or "").lower() == "date_incurred":
-                return True
-    return False
-
-
 def _build_sql_validator(*, time_window: _ResolvedTimeWindow | None) -> Callable[[str], tuple[bool, str]]:
+    # Temporal hints are now provided via context; validation focuses only on safety.
+    _ = time_window
+
     def _validate(query: str) -> tuple[bool, str]:
-        ok, reason = _safe_sql(query)
-        if not ok:
-            return ok, reason
-        if time_window is not None:
-            start_iso = time_window.start_date.isoformat()
-            end_iso = time_window.end_date.isoformat()
-            if not _sql_has_date_incurred_filter(query):
-                return (
-                    False,
-                    "Temporal intent detected from the question. SQL must filter `date_incurred` within "
-                    f"'{start_iso}' to '{end_iso}'.",
-                )
-            lower_query = query.lower()
-            requires_start = start_iso.lower() not in lower_query
-            requires_end = end_iso.lower() not in lower_query
-            if requires_start or requires_end:
-                return (
-                    False,
-                    "Temporal intent detected from the question. Use explicit inclusive bounds on "
-                    "`date_incurred`, for example "
-                    f"BETWEEN '{start_iso}' AND '{end_iso}'.",
-                )
-        return True, ""
+        return _safe_sql(query)
 
     return _validate
 
@@ -837,7 +841,6 @@ async def _graph_resolve_context(state: _AnalysisGraphState) -> _AnalysisGraphSt
         question=question,
         session=session,
         household_id=household_id,
-        today=_today_for_timezone(timezone_name),
         timezone_name=timezone_name,
     )
     return {
