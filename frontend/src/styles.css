@@ -2904,17 +2904,93 @@ a:focus-visible {
 
 .budget-overview-status {
   margin: 0;
-  font-size: clamp(1.04rem, 0.96rem + 0.42vw, 1.26rem);
-  line-height: 1.25;
-  font-weight: 780;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
   color: #10263a;
+}
+
+.budget-overview-status-primary {
+  font-size: clamp(1.34rem, 1.04rem + 0.88vw, 1.86rem);
+  font-weight: 830;
+}
+
+.budget-overview-status-divider {
+  font-size: clamp(1.08rem, 0.94rem + 0.45vw, 1.3rem);
+  font-weight: 620;
+  opacity: 0.7;
+}
+
+.budget-overview-status-secondary {
+  font-size: clamp(1.1rem, 0.96rem + 0.44vw, 1.32rem);
+  font-weight: 740;
+  opacity: 0.9;
+}
+
+.budget-overview-progress-wrap {
+  display: grid;
+  gap: 6px;
+}
+
+.budget-overview-progress {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid #cbdae6;
+  background: linear-gradient(180deg, #edf4f9, #e6eef5);
+  overflow: hidden;
+}
+
+.budget-overview-progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(120deg, var(--budget-progress, #1199ab), var(--budget-progress, #1199ab));
+  box-shadow: 0 0 14px var(--budget-progress-glow, rgba(17, 153, 171, 0.25));
+}
+
+.budget-overview-progress-overrun {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-radius: inherit;
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(239, 68, 68, 0.95) 0 8px,
+    rgba(254, 202, 202, 0.9) 8px 14px
+  );
+}
+
+.budget-overview-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #5c7590;
+}
+
+.budget-overview-progress-meta strong {
+  font-size: 11px;
+  font-weight: 780;
+  color: #213c54;
 }
 
 .budget-overview-remaining {
   margin: 0;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.25;
-  font-weight: 760;
+  font-weight: 700;
   color: #1c617f;
 }
 
@@ -4261,6 +4337,24 @@ a:focus-visible {
   color: #fffffe;
 }
 
+.app-shell-unified .budget-overview-status-divider,
+.app-shell-unified .budget-overview-status-secondary {
+  color: #d0d2e6;
+}
+
+.app-shell-unified .budget-overview-progress {
+  border-color: #34334b;
+  background: #1d1c2f;
+}
+
+.app-shell-unified .budget-overview-progress-meta {
+  color: #a7a9be;
+}
+
+.app-shell-unified .budget-overview-progress-meta strong {
+  color: #f7c59f;
+}
+
 .app-shell-unified .status-pill {
   border-color: #4a4964;
   background: #222136;
@@ -4306,6 +4400,15 @@ a:focus-visible {
 .app-shell-unified .table-wrap {
   border-color: #34334b;
   background: #161525;
+}
+
+.app-shell-unified .ledger-toolbar {
+  border-color: #34334b;
+  background: #201f33;
+}
+
+.app-shell-unified .ledger-toolbar-label {
+  color: #a7a9be;
 }
 
 .app-shell-unified .analytics-table th {

@@ -695,6 +695,8 @@ function BudgetOverviewCard({
   const usagePercentRaw = normalizedBudget > 0 ? (spentValue / normalizedBudget) * 100 : 0;
   const usagePercentVisual = Math.min(Math.max(usagePercentRaw, 0), 100);
   const usagePercentRounded = Math.round(Math.max(usagePercentRaw, 0));
+  const overrunPercent = Math.max(usagePercentRaw - 100, 0);
+  const overrunPercentVisual = Math.min(overrunPercent, 100);
   const isBreached = usagePercentRaw > 100;
   const isWarning = usagePercentRaw > 80 && usagePercentRaw <= 100;
   const remainingValue = normalizedBudget - spentValue;
@@ -729,15 +731,51 @@ function BudgetOverviewCard({
   const palette = paletteByState[stateKey];
 
   return (
-    <article className={isBreached ? "result-card budget-overview-card is-breached" : "result-card budget-overview-card"}>
+    <article
+      className={isBreached ? "result-card budget-overview-card is-breached" : "result-card budget-overview-card"}
+      style={{
+        "--budget-progress": palette.liquid,
+        "--budget-progress-glow": palette.glow,
+      }}
+    >
       <div className="budget-overview-content">
         <div className="budget-overview-title-row">
           <p className="budget-overview-heading">Monthly Budget</p>
           <span className="budget-overview-month">{monthLabel}</span>
         </div>
         <p className="budget-overview-status">
-          {formatCurrencyValue(spentValue, currency)} / {formatCurrencyValue(normalizedBudget, currency)}
+          <span className="budget-overview-status-primary">{formatCurrencyValue(spentValue, currency)}</span>
+          <span className="budget-overview-status-divider">/</span>
+          <span className="budget-overview-status-secondary">{formatCurrencyValue(normalizedBudget, currency)}</span>
         </p>
+        <div className="budget-overview-progress-wrap">
+          <div
+            className={isBreached ? "budget-overview-progress over" : "budget-overview-progress"}
+            role="progressbar"
+            aria-label={`Budget used ${usagePercentRounded} percent`}
+            aria-valuemin={0}
+            aria-valuemax={Math.max(usagePercentRounded, 100)}
+            aria-valuenow={usagePercentRounded}
+          >
+            <span
+              className="budget-overview-progress-fill"
+              style={{ width: `${usagePercentVisual}%` }}
+              aria-hidden="true"
+            />
+            {isBreached && (
+              <span
+                className="budget-overview-progress-overrun"
+                style={{ width: `${overrunPercentVisual}%` }}
+                aria-hidden="true"
+              />
+            )}
+          </div>
+          <div className="budget-overview-progress-meta">
+            <span>0%</span>
+            <strong>{usagePercentRounded}% used</strong>
+            <span>{isBreached ? `+${Math.round(overrunPercent)}% over` : "100%"}</span>
+          </div>
+        </div>
         <p className={isBreached ? "budget-overview-remaining over" : "budget-overview-remaining"}>
           {isBreached
             ? `Limit exceeded by ${formatCurrencyValue(Math.abs(remainingValue), currency)}`
