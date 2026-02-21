@@ -32,10 +32,10 @@ import {
 } from "./api";
 
 const tabs = [
+  { id: "insights", label: "Dashboard" },
   { id: "capture", label: "Add Expense" },
   { id: "ledger", label: "Ledger" },
   { id: "recurring", label: "Recurring" },
-  { id: "insights", label: "Insights" },
   { id: "people", label: "People & Access" },
 ];
 
@@ -4959,7 +4959,7 @@ export default function App() {
       user: safeParseStoredUser(userRaw),
     };
   });
-  const [activeTab, setActiveTab] = useState("capture");
+  const [activeTab, setActiveTab] = useState("insights");
   const [sessionTransitionVisible, setSessionTransitionVisible] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [capturePrefillText, setCapturePrefillText] = useState("");
@@ -5050,7 +5050,7 @@ export default function App() {
 
   const tabLabel = useMemo(() => {
     if (activeTab === "settings") return "Settings";
-    return tabs.find((tab) => tab.id === activeTab)?.label ?? "Add Expense";
+    return tabs.find((tab) => tab.id === activeTab)?.label ?? "Dashboard";
   }, [activeTab]);
 
   if (!auth?.token) {
@@ -5085,7 +5085,7 @@ export default function App() {
           settingsActive={activeTab === "settings"}
           onLogout={() => {
             setAuth({ token: null, user: null });
-            setActiveTab("capture");
+            setActiveTab("insights");
             setQuickAddOpen(false);
             setCapturePrefillText("");
             setGlobalNotice("");
