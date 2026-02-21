@@ -3731,6 +3731,42 @@ const INSIGHTS_CATEGORY_COLORS = [
 
 const INSIGHTS_PERSON_COLORS = ["#ff6b35", "#4ecdc4", "#a78bfa", "#f7c59f"];
 
+function buildSmoothSvgPath(points, smoothing = 0.16) {
+  if (!Array.isArray(points) || points.length === 0) return "";
+  if (points.length === 1) {
+    const point = points[0];
+    return `M ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+  }
+
+  let path = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const previous = points[index - 1] || points[index];
+    const current = points[index];
+    const next = points[index + 1];
+    const nextNext = points[index + 2] || next;
+    const controlOneX = current.x + (next.x - previous.x) * smoothing;
+    const controlOneY = current.y + (next.y - previous.y) * smoothing;
+    const controlTwoX = next.x - (nextNext.x - current.x) * smoothing;
+    const controlTwoY = next.y - (nextNext.y - current.y) * smoothing;
+    path += ` C ${controlOneX.toFixed(2)} ${controlOneY.toFixed(2)} ${controlTwoX.toFixed(2)} ${controlTwoY.toFixed(2)} ${next.x.toFixed(2)} ${next.y.toFixed(2)}`;
+  }
+  return path;
+}
+
+function describePieSlicePath(centerX, centerY, radius, startAngle, endAngle) {
+  const angleDistance = endAngle - startAngle;
+  if (angleDistance >= Math.PI * 2 - 0.001) {
+    return `M ${centerX.toFixed(2)} ${centerY.toFixed(2)} m 0 ${(-radius).toFixed(2)} a ${radius.toFixed(2)} ${radius.toFixed(2)} 0 1 1 0 ${(radius * 2).toFixed(2)} a ${radius.toFixed(2)} ${radius.toFixed(2)} 0 1 1 0 ${(-radius * 2).toFixed(2)} Z`;
+  }
+
+  const startX = centerX + radius * Math.cos(startAngle);
+  const startY = centerY + radius * Math.sin(startAngle);
+  const endX = centerX + radius * Math.cos(endAngle);
+  const endY = centerY + radius * Math.sin(endAngle);
+  const largeArc = angleDistance > Math.PI ? 1 : 0;
+  return `M ${centerX.toFixed(2)} ${centerY.toFixed(2)} L ${startX.toFixed(2)} ${startY.toFixed(2)} A ${radius.toFixed(2)} ${radius.toFixed(2)} 0 ${largeArc} 1 ${endX.toFixed(2)} ${endY.toFixed(2)} Z`;
+}
+
 function DashboardPanel({ token, embedded = false }) {
   const [monthsBack, setMonthsBack] = useState(6);
   const [dashboard, setDashboard] = useState(null);
@@ -3738,6 +3774,8 @@ function DashboardPanel({ token, embedded = false }) {
   const [categoryFeedLoading, setCategoryFeedLoading] = useState(false);
   const [categoryFeedError, setCategoryFeedError] = useState("");
   const [expandedCategoryKey, setExpandedCategoryKey] = useState("");
+  const [activePieSliceKey, setActivePieSliceKey] = useState("");
+  const [hoveredPieSliceKey, setHoveredPieSliceKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -3799,6 +3837,8 @@ function DashboardPanel({ token, embedded = false }) {
 
   useEffect(() => {
     setExpandedCategoryKey("");
+    setActivePieSliceKey("");
+    setHoveredPieSliceKey("");
   }, [monthsBack, dashboard?.period_month]);
 
   const maxCategoryTotal = useMemo(() => {
@@ -3899,9 +3939,7 @@ function DashboardPanel({ token, embedded = false }) {
       return { ...item, index, x, y };
     });
 
-    const linePath = points
-      .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
-      .join(" ");
+    const linePath = buildSmoothSvgPath(points);
     const baselineY = padding.top + innerHeight;
     const areaPath = `${linePath} L ${points[points.length - 1].x.toFixed(2)} ${baselineY.toFixed(2)} L ${points[0].x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
 
@@ -3945,32 +3983,59 @@ function DashboardPanel({ token, embedded = false }) {
   const categoryPie = useMemo(() => {
     const split = Array.isArray(dashboard?.category_split) ? dashboard.category_split : [];
     const total = split.reduce((sum, item) => sum + Number(item?.total || 0), 0);
+    const centerX = 120;
+    const centerY = 120;
+    const radius = 105;
     if (!split.length || total <= 0) {
-      return { total: 0, gradient: "", segments: [] };
+      return {
+        total: 0,
+        centerX,
+        centerY,
+        radius,
+        viewBox: "0 0 240 240",
+        segments: [],
+      };
     }
 
     let cursor = 0;
     const segments = split.map((item, index) => {
       const value = Number(item?.total || 0);
       const share = total > 0 ? value / total : 0;
-      const start = cursor * 100;
+      const startRatio = cursor;
       cursor += share;
-      const end = Math.max(cursor * 100, start + 0.18);
+      const endRatio = index === split.length - 1 ? 1 : cursor;
+      const startAngle = startRatio * Math.PI * 2 - Math.PI / 2;
+      const endAngle = endRatio * Math.PI * 2 - Math.PI / 2;
+      const midAngle = startAngle + (endAngle - startAngle) / 2;
+      const category = String(item?.category || "Other").trim() || "Other";
+      const key = `${index}-${normalizeTaxonomyName(category) || "other"}`;
       return {
-        category: String(item?.category || "Other").trim() || "Other",
+        key,
+        category,
         total: value,
         percentage: share * 100,
         color: INSIGHTS_CATEGORY_COLORS[index % INSIGHTS_CATEGORY_COLORS.length],
-        start,
-        end,
+        path: describePieSlicePath(centerX, centerY, radius, startAngle, endAngle),
+        pullX: Math.cos(midAngle),
+        pullY: Math.sin(midAngle),
       };
     });
 
-    const gradient = `conic-gradient(${segments
-      .map((segment) => `${segment.color} ${segment.start.toFixed(2)}% ${segment.end.toFixed(2)}%`)
-      .join(", ")})`;
-    return { total, gradient, segments };
+    return {
+      total,
+      centerX,
+      centerY,
+      radius,
+      viewBox: "0 0 240 240",
+      segments,
+    };
   }, [dashboard?.category_split]);
+
+  const activePieSegment = useMemo(() => {
+    const selectedKey = hoveredPieSliceKey || activePieSliceKey;
+    if (!selectedKey) return null;
+    return categoryPie.segments.find((segment) => segment.key === selectedKey) || null;
+  }, [activePieSliceKey, categoryPie.segments, hoveredPieSliceKey]);
 
   const periodSubtitle = useMemo(() => {
     if (!periodStart || !periodEnd) return "Current month overview";
@@ -4184,27 +4249,104 @@ function DashboardPanel({ token, embedded = false }) {
                 ) : (
                   <>
                     <div className="insights-pie-shell">
-                      <div className="insights-pie-chart" style={{ background: categoryPie.gradient }}>
-                        <div className="insights-pie-hole">
-                          <span>Total</span>
-                          <strong>{formatCompactCurrencyValue(categoryPie.total, dashboardCurrency)}</strong>
-                        </div>
+                      <svg
+                        className="insights-pie-chart"
+                        viewBox={categoryPie.viewBox}
+                        role="img"
+                        aria-label="Spending by category pie chart"
+                      >
+                        {categoryPie.segments.map((segment) => {
+                          const isActive = activePieSliceKey === segment.key;
+                          const isHovered = hoveredPieSliceKey === segment.key;
+                          const pullDistance = isActive ? 14 : isHovered ? 7 : 0;
+                          const offsetX = segment.pullX * pullDistance;
+                          const offsetY = segment.pullY * pullDistance;
+                          const isDimmed =
+                            Boolean(activePieSegment) && activePieSegment.key !== segment.key;
+                          return (
+                            <path
+                              key={segment.key}
+                              d={segment.path}
+                              fill={segment.color}
+                              className={
+                                isActive
+                                  ? isDimmed
+                                    ? "insights-pie-slice is-active is-dimmed"
+                                    : "insights-pie-slice is-active"
+                                  : isDimmed
+                                    ? "insights-pie-slice is-dimmed"
+                                    : "insights-pie-slice"
+                              }
+                              style={{
+                                transform: `translate(${offsetX.toFixed(2)}px, ${offsetY.toFixed(2)}px)`,
+                              }}
+                              tabIndex={0}
+                              role="button"
+                              aria-label={`${segment.category} ${segment.percentage.toFixed(1)} percent`}
+                              onMouseEnter={() => setHoveredPieSliceKey(segment.key)}
+                              onMouseLeave={() => setHoveredPieSliceKey("")}
+                              onFocus={() => setHoveredPieSliceKey(segment.key)}
+                              onBlur={() => setHoveredPieSliceKey("")}
+                              onClick={() =>
+                                setActivePieSliceKey((previous) =>
+                                  previous === segment.key ? "" : segment.key
+                                )
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  setActivePieSliceKey((previous) =>
+                                    previous === segment.key ? "" : segment.key
+                                  );
+                                }
+                              }}
+                            />
+                          );
+                        })}
+                      </svg>
+
+                      <div className="insights-pie-hole">
+                        <span>{activePieSegment ? activePieSegment.category : "Total"}</span>
+                        <strong>
+                          {activePieSegment
+                            ? `${activePieSegment.percentage.toFixed(1)}%`
+                            : formatCompactCurrencyValue(categoryPie.total, dashboardCurrency)}
+                        </strong>
+                        {activePieSegment && (
+                          <small>
+                            {formatCompactCurrencyValue(activePieSegment.total, dashboardCurrency)}
+                          </small>
+                        )}
                       </div>
                     </div>
 
                     <div className="insights-pie-legend">
                       {categoryPie.segments.map((segment) => (
-                        <div className="insights-pie-legend-item" key={segment.category}>
+                        <button
+                          type="button"
+                          className={
+                            activePieSegment?.key === segment.key
+                              ? "insights-pie-legend-item active"
+                              : "insights-pie-legend-item"
+                          }
+                          key={segment.key}
+                          onMouseEnter={() => setHoveredPieSliceKey(segment.key)}
+                          onMouseLeave={() => setHoveredPieSliceKey("")}
+                          onFocus={() => setHoveredPieSliceKey(segment.key)}
+                          onBlur={() => setHoveredPieSliceKey("")}
+                          onClick={() =>
+                            setActivePieSliceKey((previous) =>
+                              previous === segment.key ? "" : segment.key
+                            )
+                          }
+                        >
                           <span
                             className="insights-pie-legend-dot"
                             style={{ backgroundColor: segment.color }}
                             aria-hidden="true"
                           />
                           <span className="insights-pie-legend-name">{segment.category}</span>
-                          <span className="insights-pie-legend-share">
-                            {segment.percentage.toFixed(1)}%
-                          </span>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   </>
