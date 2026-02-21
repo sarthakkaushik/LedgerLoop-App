@@ -562,86 +562,6 @@ function ConfirmModal({
   );
 }
 
-function ExpenseEditModal({ open, busy = false, error = "", form, onChange, onCancel, onSave }) {
-  if (!open) return null;
-
-  return (
-    <div className="confirm-backdrop" role="presentation">
-      <div className="confirm-modal expense-edit-modal" role="dialog" aria-modal="true" aria-labelledby="edit-expense">
-        <h3 id="edit-expense">Edit Expense</h3>
-        <div className="expense-edit-grid">
-          <label className="expense-edit-field">
-            Date
-            <input
-              type="date"
-              value={form.date_incurred}
-              onChange={(e) => onChange("date_incurred", e.target.value)}
-              disabled={busy}
-            />
-          </label>
-          <label className="expense-edit-field">
-            Amount
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
-              value={form.amount}
-              onChange={(e) => onChange("amount", e.target.value)}
-              disabled={busy}
-            />
-          </label>
-          <label className="expense-edit-field">
-            Currency
-            <input
-              maxLength={8}
-              value={form.currency}
-              onChange={(e) => onChange("currency", e.target.value.toUpperCase())}
-              disabled={busy}
-            />
-          </label>
-          <label className="expense-edit-field">
-            Category
-            <input
-              maxLength={80}
-              value={form.category}
-              onChange={(e) => onChange("category", e.target.value)}
-              disabled={busy}
-            />
-          </label>
-          <label className="expense-edit-field">
-            Subcategory
-            <input
-              maxLength={80}
-              value={form.subcategory}
-              onChange={(e) => onChange("subcategory", e.target.value)}
-              disabled={busy}
-            />
-          </label>
-          <label className="expense-edit-field expense-edit-field-wide">
-            Description
-            <textarea
-              rows={3}
-              maxLength={255}
-              value={form.description}
-              onChange={(e) => onChange("description", e.target.value)}
-              disabled={busy}
-            />
-          </label>
-        </div>
-        {error && <p className="form-error">{error}</p>}
-        <div className="expense-edit-actions">
-          <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-          <button type="button" className="btn-main" onClick={onSave} disabled={busy}>
-            {busy ? "Saving..." : "Save Changes"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function PanelSkeleton({ rows = 3 }) {
   return (
     <div className="panel-skeleton" aria-hidden="true">
@@ -2442,6 +2362,8 @@ function LedgerPanel({ token, user, onOpenSettings }) {
   const [statusFilter, setStatusFilter] = useState("confirmed");
   const [budgetSnapshot, setBudgetSnapshot] = useState(null);
   const [totalBudget, setTotalBudget] = useState(DEFAULT_MONTHLY_BUDGET);
+  const [taxonomy, setTaxonomy] = useState({ categories: [] });
+  const [taxonomyError, setTaxonomyError] = useState("");
   const [loading, setLoading] = useState(false);
   const [deletingExpenseId, setDeletingExpenseId] = useState(null);
   const [updatingRecurringId, setUpdatingRecurringId] = useState(null);
@@ -2460,6 +2382,14 @@ function LedgerPanel({ token, user, onOpenSettings }) {
   const [editError, setEditError] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const taxonomyCategories = useMemo(
+    () => (Array.isArray(taxonomy?.categories) ? taxonomy.categories : []),
+    [taxonomy]
+  );
+  const taxonomyCategoryOptions = useMemo(
+    () => taxonomyCategories.map((category) => category.name),
+    [taxonomyCategories]
+  );
   const budgetCurrency = useMemo(() => {
     const item = Array.isArray(feed?.items) ? feed.items.find((entry) => String(entry?.currency || "").trim()) : null;
     return String(item?.currency || "INR").toUpperCase();
@@ -2479,16 +2409,35 @@ function LedgerPanel({ token, user, onOpenSettings }) {
     }, 0);
   }, [budgetSnapshot?.total_spend, feed?.items]);
 
+  function getSubcategoryOptions(categoryName) {
+    const normalized = normalizeTaxonomyName(categoryName);
+    if (!normalized) return [];
+    const match = taxonomyCategories.find(
+      (category) => normalizeTaxonomyName(category.name) === normalized
+    );
+    return (match?.subcategories || []).map((subcategory) => subcategory.name);
+  }
+
   async function loadLedgerData() {
     setLoading(true);
     setError("");
     try {
-      const [feedData, dashboardData, householdData] = await Promise.all([
+      const taxonomyPromise = fetchTaxonomy(token)
+        .then((data) => ({ data, error: "" }))
+        .catch((err) => ({
+          data: { categories: [] },
+          error: String(err?.message || "Could not load taxonomy options."),
+        }));
+
+      const [feedData, dashboardData, householdData, taxonomyResult] = await Promise.all([
         fetchExpenseFeed(token, { status: statusFilter, limit: 200 }),
         fetchDashboard(token, 6).catch(() => null),
         fetchHousehold(token).catch(() => null),
+        taxonomyPromise,
       ]);
       setFeed(feedData);
+      setTaxonomy(taxonomyResult.data);
+      setTaxonomyError(taxonomyResult.error);
       const budgetNumeric = parseNumeric(householdData?.monthly_budget);
       setTotalBudget(budgetNumeric !== null && budgetNumeric > 0 ? Number(budgetNumeric.toFixed(2)) : DEFAULT_MONTHLY_BUDGET);
       if (dashboardData) {
@@ -2579,7 +2528,28 @@ function LedgerPanel({ token, user, onOpenSettings }) {
   }
 
   function updateExpenseEditField(field, value) {
-    setExpenseEditDraft((previous) => ({ ...previous, [field]: value }));
+    setExpenseEditDraft((previous) => {
+      const next = { ...previous, [field]: value };
+      if (field === "currency") {
+        next.currency = String(value || "").toUpperCase();
+      }
+      if (field === "category") {
+        const options = getSubcategoryOptions(value);
+        if (
+          next.subcategory &&
+          !options.some(
+            (subcategory) =>
+              normalizeTaxonomyName(subcategory) === normalizeTaxonomyName(next.subcategory)
+          )
+        ) {
+          next.subcategory = "";
+        }
+      }
+      if (field === "subcategory" && !value) {
+        next.subcategory = "";
+      }
+      return next;
+    });
     setEditError("");
   }
 
@@ -2705,20 +2675,129 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                     {feed.items.map((item) => {
                       const canEdit = user?.role === "admin" || item.logged_by_user_id === user?.id;
                       const canDelete = canEdit;
+                      const isEditing = expenseToEdit?.id === item.id;
+                      const savingThisRow = updatingExpenseId === item.id;
+                      const rowBusy = savingThisRow || deletingExpenseId === item.id;
+                      const subcategoryOptions = getSubcategoryOptions(expenseEditDraft.category);
                       return (
                         <tr key={item.id}>
-                          <td>{formatDateValue(item.date_incurred)}</td>
-                          <td>{item.logged_by_name}</td>
-                          <td>{item.category || "Other"}</td>
                           <td>
-                            {item.subcategory ? item.subcategory : <span className="empty-value">-</span>}
+                            {isEditing ? (
+                              <input
+                                className="ledger-inline-input"
+                                type="date"
+                                value={expenseEditDraft.date_incurred}
+                                onChange={(e) => updateExpenseEditField("date_incurred", e.target.value)}
+                                disabled={rowBusy}
+                              />
+                            ) : (
+                              formatDateValue(item.date_incurred)
+                            )}
                           </td>
-                          <td>{item.description || item.merchant_or_item || "-"}</td>
-                          <td>{formatCurrencyValue(item.amount, item.currency)}</td>
+                          <td>
+                            <span className={isEditing ? "ledger-inline-loggedby" : ""}>{item.logged_by_name}</span>
+                          </td>
+                          <td>
+                            {isEditing ? (
+                              <select
+                                className="ledger-inline-select"
+                                value={expenseEditDraft.category || ""}
+                                onChange={(e) => updateExpenseEditField("category", e.target.value)}
+                                disabled={rowBusy}
+                              >
+                                <option value="">Select category</option>
+                                {expenseEditDraft.category &&
+                                  !taxonomyCategoryOptions.some(
+                                    (category) =>
+                                      normalizeTaxonomyName(category) ===
+                                      normalizeTaxonomyName(expenseEditDraft.category)
+                                  ) && (
+                                    <option value={expenseEditDraft.category}>
+                                      {expenseEditDraft.category}
+                                    </option>
+                                  )}
+                                {taxonomyCategoryOptions.map((category) => (
+                                  <option key={category} value={category}>
+                                    {category}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              item.category || "Other"
+                            )}
+                          </td>
+                          <td>
+                            {isEditing ? (
+                              <select
+                                className="ledger-inline-select"
+                                value={expenseEditDraft.subcategory || ""}
+                                onChange={(e) => updateExpenseEditField("subcategory", e.target.value)}
+                                disabled={rowBusy || !expenseEditDraft.category}
+                              >
+                                <option value="">Select subcategory</option>
+                                {expenseEditDraft.subcategory &&
+                                  !subcategoryOptions.some(
+                                    (subcategory) =>
+                                      normalizeTaxonomyName(subcategory) ===
+                                      normalizeTaxonomyName(expenseEditDraft.subcategory)
+                                  ) && (
+                                    <option value={expenseEditDraft.subcategory}>
+                                      {expenseEditDraft.subcategory}
+                                    </option>
+                                  )}
+                                {subcategoryOptions.map((subcategory) => (
+                                  <option key={`${expenseEditDraft.category}-${subcategory}`} value={subcategory}>
+                                    {subcategory}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : item.subcategory ? (
+                              item.subcategory
+                            ) : (
+                              <span className="empty-value">-</span>
+                            )}
+                          </td>
+                          <td>
+                            {isEditing ? (
+                              <input
+                                className="ledger-inline-input"
+                                maxLength={255}
+                                value={expenseEditDraft.description}
+                                onChange={(e) => updateExpenseEditField("description", e.target.value)}
+                                disabled={rowBusy}
+                              />
+                            ) : (
+                              item.description || item.merchant_or_item || "-"
+                            )}
+                          </td>
+                          <td>
+                            {isEditing ? (
+                              <div className="ledger-inline-amount">
+                                <input
+                                  className="ledger-inline-input"
+                                  type="number"
+                                  min="0.01"
+                                  step="0.01"
+                                  value={expenseEditDraft.amount}
+                                  onChange={(e) => updateExpenseEditField("amount", e.target.value)}
+                                  disabled={rowBusy}
+                                />
+                                <input
+                                  className="ledger-inline-input ledger-inline-currency"
+                                  maxLength={8}
+                                  value={expenseEditDraft.currency}
+                                  onChange={(e) => updateExpenseEditField("currency", e.target.value)}
+                                  disabled={rowBusy}
+                                />
+                              </div>
+                            ) : (
+                              formatCurrencyValue(item.amount, item.currency)
+                            )}
+                          </td>
                           <td>
                             <RecurringSwitch
                               checked={Boolean(item.is_recurring)}
-                              disabled={updatingRecurringId === item.id || updatingExpenseId === item.id}
+                              disabled={isEditing || updatingRecurringId === item.id || updatingExpenseId === item.id}
                               onToggle={(nextValue) => handleToggleRecurring(item, nextValue)}
                               label={`Toggle recurring for expense on ${formatDateValue(item.date_incurred)}`}
                             />
@@ -2727,34 +2806,57 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                             <StatusPill status={item.status} />
                           </td>
                           <td>
-                            <div className="table-row-actions">
-                              {canEdit && (
+                            {isEditing ? (
+                              <div className="ledger-inline-actions">
                                 <button
                                   type="button"
-                                  className="icon-edit-button"
-                                  onClick={() => openExpenseEdit(item)}
-                                  aria-label={`Edit expense on ${formatDateValue(item.date_incurred)}`}
-                                  title="Edit expense"
-                                  disabled={deletingExpenseId === item.id || updatingExpenseId === item.id}
+                                  className="btn-main"
+                                  onClick={handleSaveExpenseEdit}
+                                  disabled={rowBusy}
                                 >
-                                  <EditIcon />
-                                  <span className="sr-only">Edit expense</span>
+                                  {savingThisRow ? "Saving..." : "Save"}
                                 </button>
-                              )}
-                              {canDelete && (
                                 <button
                                   type="button"
-                                  className="icon-delete-button"
-                                  onClick={() => setExpenseToDelete(item)}
-                                  aria-label={`Delete expense on ${formatDateValue(item.date_incurred)}`}
-                                  title="Delete expense"
-                                  disabled={deletingExpenseId === item.id || updatingExpenseId === item.id}
+                                  className="btn-ghost"
+                                  onClick={closeExpenseEdit}
+                                  disabled={rowBusy}
                                 >
-                                  <TrashIcon />
-                                  <span className="sr-only">Delete expense</span>
+                                  Cancel
                                 </button>
-                              )}
-                            </div>
+                                {editError && <p className="form-error ledger-inline-error">{editError}</p>}
+                                {taxonomyError && <p className="hint ledger-inline-hint">{taxonomyError}</p>}
+                              </div>
+                            ) : (
+                              <div className="table-row-actions">
+                                {canEdit && (
+                                  <button
+                                    type="button"
+                                    className="icon-edit-button"
+                                    onClick={() => openExpenseEdit(item)}
+                                    aria-label={`Edit expense on ${formatDateValue(item.date_incurred)}`}
+                                    title="Edit expense"
+                                    disabled={deletingExpenseId === item.id || updatingExpenseId === item.id}
+                                  >
+                                    <EditIcon />
+                                    <span className="sr-only">Edit expense</span>
+                                  </button>
+                                )}
+                                {canDelete && (
+                                  <button
+                                    type="button"
+                                    className="icon-delete-button"
+                                    onClick={() => setExpenseToDelete(item)}
+                                    aria-label={`Delete expense on ${formatDateValue(item.date_incurred)}`}
+                                    title="Delete expense"
+                                    disabled={deletingExpenseId === item.id || updatingExpenseId === item.id}
+                                  >
+                                    <TrashIcon />
+                                    <span className="sr-only">Delete expense</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </td>
                         </tr>
                       );
@@ -2767,6 +2869,133 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                 {feed.items.map((item) => {
                   const canEdit = user?.role === "admin" || item.logged_by_user_id === user?.id;
                   const canDelete = canEdit;
+                  const isEditing = expenseToEdit?.id === item.id;
+                  const savingThisRow = updatingExpenseId === item.id;
+                  const rowBusy = savingThisRow || deletingExpenseId === item.id;
+                  const subcategoryOptions = getSubcategoryOptions(expenseEditDraft.category);
+                  if (isEditing) {
+                    return (
+                      <article className="mobile-data-card" key={`mobile-${item.id}`}>
+                        <p className="mobile-data-card-title">Edit Expense</p>
+                        <div className="ledger-inline-mobile-editor">
+                          <div className="mobile-data-row">
+                            <span className="mobile-data-label">Logged By</span>
+                            <span className="mobile-data-value ledger-inline-loggedby">{item.logged_by_name}</span>
+                          </div>
+                          <label className="ledger-inline-mobile-field">
+                            Date
+                            <input
+                              type="date"
+                              value={expenseEditDraft.date_incurred}
+                              onChange={(e) => updateExpenseEditField("date_incurred", e.target.value)}
+                              disabled={rowBusy}
+                            />
+                          </label>
+                          <label className="ledger-inline-mobile-field">
+                            Amount
+                            <input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={expenseEditDraft.amount}
+                              onChange={(e) => updateExpenseEditField("amount", e.target.value)}
+                              disabled={rowBusy}
+                            />
+                          </label>
+                          <label className="ledger-inline-mobile-field">
+                            Currency
+                            <input
+                              maxLength={8}
+                              value={expenseEditDraft.currency}
+                              onChange={(e) => updateExpenseEditField("currency", e.target.value)}
+                              disabled={rowBusy}
+                            />
+                          </label>
+                          <label className="ledger-inline-mobile-field">
+                            Category
+                            <select
+                              value={expenseEditDraft.category || ""}
+                              onChange={(e) => updateExpenseEditField("category", e.target.value)}
+                              disabled={rowBusy}
+                            >
+                              <option value="">Select category</option>
+                              {expenseEditDraft.category &&
+                                !taxonomyCategoryOptions.some(
+                                  (category) =>
+                                    normalizeTaxonomyName(category) ===
+                                    normalizeTaxonomyName(expenseEditDraft.category)
+                                ) && (
+                                  <option value={expenseEditDraft.category}>{expenseEditDraft.category}</option>
+                                )}
+                              {taxonomyCategoryOptions.map((category) => (
+                                <option key={`mobile-edit-${item.id}-${category}`} value={category}>
+                                  {category}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="ledger-inline-mobile-field">
+                            Subcategory
+                            <select
+                              value={expenseEditDraft.subcategory || ""}
+                              onChange={(e) => updateExpenseEditField("subcategory", e.target.value)}
+                              disabled={rowBusy || !expenseEditDraft.category}
+                            >
+                              <option value="">Select subcategory</option>
+                              {expenseEditDraft.subcategory &&
+                                !subcategoryOptions.some(
+                                  (subcategory) =>
+                                    normalizeTaxonomyName(subcategory) ===
+                                    normalizeTaxonomyName(expenseEditDraft.subcategory)
+                                ) && (
+                                  <option value={expenseEditDraft.subcategory}>
+                                    {expenseEditDraft.subcategory}
+                                  </option>
+                                )}
+                              {subcategoryOptions.map((subcategory) => (
+                                <option
+                                  key={`mobile-edit-${item.id}-${expenseEditDraft.category}-${subcategory}`}
+                                  value={subcategory}
+                                >
+                                  {subcategory}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="ledger-inline-mobile-field">
+                            Description
+                            <textarea
+                              rows={3}
+                              maxLength={255}
+                              value={expenseEditDraft.description}
+                              onChange={(e) => updateExpenseEditField("description", e.target.value)}
+                              disabled={rowBusy}
+                            />
+                          </label>
+                          <div className="mobile-data-actions ledger-inline-mobile-actions">
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              onClick={closeExpenseEdit}
+                              disabled={rowBusy}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-main"
+                              onClick={handleSaveExpenseEdit}
+                              disabled={rowBusy}
+                            >
+                              {savingThisRow ? "Saving..." : "Save Changes"}
+                            </button>
+                          </div>
+                          {editError && <p className="form-error ledger-inline-error">{editError}</p>}
+                          {taxonomyError && <p className="hint ledger-inline-hint">{taxonomyError}</p>}
+                        </div>
+                      </article>
+                    );
+                  }
                   return (
                     <article className="mobile-data-card" key={`mobile-${item.id}`}>
                       <div className="mobile-data-row">
@@ -2852,16 +3081,6 @@ function LedgerPanel({ token, user, onOpenSettings }) {
           )}
         </article>
       )}
-
-      <ExpenseEditModal
-        open={Boolean(expenseToEdit)}
-        busy={Boolean(expenseToEdit && updatingExpenseId === expenseToEdit.id)}
-        error={editError}
-        form={expenseEditDraft}
-        onChange={updateExpenseEditField}
-        onCancel={closeExpenseEdit}
-        onSave={handleSaveExpenseEdit}
-      />
 
       <ConfirmModal
         open={Boolean(expenseToDelete)}

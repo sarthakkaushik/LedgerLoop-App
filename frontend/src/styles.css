@@ -2332,7 +2332,11 @@ a:focus-visible {
 }
 
 .ledger-table th:last-child,
-.ledger-table td:last-child,
+.ledger-table td:last-child {
+  text-align: center;
+  width: 190px;
+}
+
 .recurring-table th:last-child,
 .recurring-table td:last-child {
   text-align: center;
@@ -2344,6 +2348,67 @@ a:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 4px;
+}
+
+.ledger-inline-input,
+.ledger-inline-select {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.ledger-inline-amount {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 68px;
+  gap: 6px;
+  align-items: center;
+}
+
+.ledger-inline-currency {
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.ledger-inline-actions {
+  display: grid;
+  gap: 6px;
+  justify-items: stretch;
+}
+
+.ledger-inline-actions .btn-main,
+.ledger-inline-actions .btn-ghost {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.ledger-inline-error,
+.ledger-inline-hint {
+  margin: 0;
+  text-align: left;
+}
+
+.ledger-inline-hint {
+  font-size: 11px;
+}
+
+.ledger-inline-loggedby {
+  font-weight: 760;
+  color: #243a54;
+}
+
+.ledger-inline-mobile-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.ledger-inline-mobile-field {
+  gap: 6px;
+}
+
+.ledger-inline-mobile-actions .btn-main,
+.ledger-inline-mobile-actions .btn-ghost {
+  min-height: 38px;
 }
 
 .mobile-data-list {
