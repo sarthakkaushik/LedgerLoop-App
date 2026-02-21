@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from difflib import SequenceMatcher
 import re
@@ -78,7 +79,20 @@ _DESCRIPTION_FRAGMENT_RE = re.compile(
     r"(?:contains|contain|like|with|matching)\s+([a-z0-9][a-z0-9\s&/_-]{1,80})",
     flags=re.IGNORECASE,
 )
+_RELATIVE_TIME_WINDOW_RE = re.compile(
+    r"\b(?:in\s+the\s+)?(?:last|past|previous)\s+(\d{1,3})\s+"
+    r"(day|days|week|weeks|month|months)\b",
+    flags=re.IGNORECASE,
+)
 _EMPTY_HINTS: list[str] = []
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedTimeWindow:
+    source_phrase: str
+    start_date: date
+    end_date: date
+    interpretation: str
 
 
 class _AnalysisGraphState(TypedDict, total=False):
@@ -88,6 +102,7 @@ class _AnalysisGraphState(TypedDict, total=False):
     context_hints: list[str]
     household_member_names: list[str]
     household_category_names: list[str]
+    time_window: _ResolvedTimeWindow | None
     should_fuzzy_retry: bool
     runtime: LLMRuntimeConfig
     execute_sql: SQLExecutor
@@ -411,6 +426,113 @@ def _extract_description_phrase(question: str) -> str:
     return _clean_extracted_fragment(match.group(1))
 
 
+def _shift_month_start(start: date, month_delta: int) -> date:
+    year = start.year
+    month = start.month + month_delta
+    while month <= 0:
+        month += 12
+        year -= 1
+    while month > 12:
+        month -= 12
+        year += 1
+    return date(year, month, 1)
+
+
+def _extract_time_window(question: str, *, today: date) -> _ResolvedTimeWindow | None:
+    lowered = question.lower()
+    match = _RELATIVE_TIME_WINDOW_RE.search(lowered)
+    if match:
+        amount = int(match.group(1))
+        if amount > 0:
+            unit = match.group(2).lower()
+            source_phrase = question[match.start() : match.end()].strip() or match.group(0)
+            if unit.startswith("day"):
+                start_date = today - timedelta(days=amount - 1)
+                return _ResolvedTimeWindow(
+                    source_phrase=source_phrase,
+                    start_date=start_date,
+                    end_date=today,
+                    interpretation=f"rolling last {amount} day(s) including today",
+                )
+            if unit.startswith("week"):
+                start_date = today - timedelta(days=(amount * 7) - 1)
+                return _ResolvedTimeWindow(
+                    source_phrase=source_phrase,
+                    start_date=start_date,
+                    end_date=today,
+                    interpretation=f"rolling last {amount} week(s) including today",
+                )
+            if unit.startswith("month"):
+                this_month_start = date(today.year, today.month, 1)
+                start_date = _shift_month_start(this_month_start, -(amount - 1))
+                return _ResolvedTimeWindow(
+                    source_phrase=source_phrase,
+                    start_date=start_date,
+                    end_date=today,
+                    interpretation=f"calendar window over last {amount} month(s) including current month",
+                )
+
+    if re.search(r"\btoday\b", lowered):
+        return _ResolvedTimeWindow(
+            source_phrase="today",
+            start_date=today,
+            end_date=today,
+            interpretation="today only",
+        )
+    if re.search(r"\byesterday\b", lowered):
+        yesterday = today - timedelta(days=1)
+        return _ResolvedTimeWindow(
+            source_phrase="yesterday",
+            start_date=yesterday,
+            end_date=yesterday,
+            interpretation="yesterday only",
+        )
+    if re.search(r"\bthis\s+week\b", lowered):
+        week_start = today - timedelta(days=today.weekday())
+        return _ResolvedTimeWindow(
+            source_phrase="this week",
+            start_date=week_start,
+            end_date=today,
+            interpretation="current week to date (Monday start)",
+        )
+    if re.search(r"\blast\s+week\b", lowered):
+        last_week_end = today - timedelta(days=today.weekday() + 1)
+        last_week_start = last_week_end - timedelta(days=6)
+        return _ResolvedTimeWindow(
+            source_phrase="last week",
+            start_date=last_week_start,
+            end_date=last_week_end,
+            interpretation="previous full week (Monday-Sunday)",
+        )
+    if re.search(r"\bthis\s+month\b", lowered):
+        month_start = date(today.year, today.month, 1)
+        return _ResolvedTimeWindow(
+            source_phrase="this month",
+            start_date=month_start,
+            end_date=today,
+            interpretation="current month to date",
+        )
+    if re.search(r"\blast\s+month\b", lowered):
+        this_month_start = date(today.year, today.month, 1)
+        last_month_end = this_month_start - timedelta(days=1)
+        last_month_start = date(last_month_end.year, last_month_end.month, 1)
+        return _ResolvedTimeWindow(
+            source_phrase="last month",
+            start_date=last_month_start,
+            end_date=last_month_end,
+            interpretation="previous full calendar month",
+        )
+    return None
+
+
+def _build_time_window_hint(window: _ResolvedTimeWindow, *, timezone_name: str) -> str:
+    return (
+        f"Temporal range from '{window.source_phrase}' => date_incurred BETWEEN "
+        f"'{window.start_date.isoformat()}' AND '{window.end_date.isoformat()}' "
+        f"(inclusive, timezone '{timezone_name}', {window.interpretation})."
+    )
+
+
 def _match_score(fragment: str, candidate: str) -> float:
     fragment_norm = _normalize_fragment(fragment)
     candidate_norm = _normalize_fragment(candidate)
@@ -494,9 +616,14 @@ async def _resolve_question_context(
     question: str,
     session: AsyncSession,
     household_id: UUID,
-) -> tuple[list[str], bool, list[str], list[str]]:
+    today: date,
+    timezone_name: str,
+) -> tuple[list[str], bool, list[str], list[str], _ResolvedTimeWindow | None]:
     hints: list[str] = []
     should_fuzzy_retry = False
+    time_window = _extract_time_window(question, today=today)
+    if time_window is not None:
+        hints.append(_build_time_window_hint(time_window, timezone_name=timezone_name))
     member_names, categories, subcategories = await _load_resolution_candidates(
         session,
         household_id=household_id,
@@ -563,7 +690,7 @@ async def _resolve_question_context(
         )
         should_fuzzy_retry = True
 
-    return hints, should_fuzzy_retry, member_names, categories
+    return hints, should_fuzzy_retry, member_names, categories, time_window
 
 
 def _augment_question_with_context(
@@ -636,28 +763,88 @@ def _merge_agent_results(primary: SQLAgentResult, fallback: SQLAgentResult) -> S
     )
 
 
+def _sql_has_date_incurred_filter(sql_query: str) -> bool:
+    try:
+        import sqlglot
+        from sqlglot import exp
+    except Exception:
+        low = sql_query.lower()
+        where_clauses = re.findall(
+            r"\bwhere\b(.+?)(?:\bgroup\s+by\b|\border\s+by\b|\bhaving\b|\blimit\b|\boffset\b|\bunion\b|$)",
+            low,
+            flags=re.DOTALL,
+        )
+        return any("date_incurred" in clause for clause in where_clauses)
+
+    try:
+        tree = sqlglot.parse_one(sql_query, read="postgres")
+    except Exception:
+        return False
+
+    for where_node in tree.find_all(exp.Where):
+        for col in where_node.find_all(exp.Column):
+            if str(col.name or "").lower() == "date_incurred":
+                return True
+    return False
+
+
+def _build_sql_validator(*, time_window: _ResolvedTimeWindow | None) -> Callable[[str], tuple[bool, str]]:
+    def _validate(query: str) -> tuple[bool, str]:
+        ok, reason = _safe_sql(query)
+        if not ok:
+            return ok, reason
+        if time_window is not None:
+            start_iso = time_window.start_date.isoformat()
+            end_iso = time_window.end_date.isoformat()
+            if not _sql_has_date_incurred_filter(query):
+                return (
+                    False,
+                    "Temporal intent detected from the question. SQL must filter `date_incurred` within "
+                    f"'{start_iso}' to '{end_iso}'.",
+                )
+            lower_query = query.lower()
+            requires_start = start_iso.lower() not in lower_query
+            requires_end = end_iso.lower() not in lower_query
+            if requires_start or requires_end:
+                return (
+                    False,
+                    "Temporal intent detected from the question. Use explicit inclusive bounds on "
+                    "`date_incurred`, for example "
+                    f"BETWEEN '{start_iso}' AND '{end_iso}'.",
+                )
+        return True, ""
+
+    return _validate
+
+
 async def _graph_resolve_context(state: _AnalysisGraphState) -> _AnalysisGraphState:
     question = str(state.get("question") or "").strip()
     session = state.get("session")
     household_id = state.get("household_id")
+    runtime = state.get("runtime")
     if not question or session is None or household_id is None:
         return {
             "context_hints": _EMPTY_HINTS,
             "household_member_names": [],
             "household_category_names": [],
+            "time_window": None,
             "should_fuzzy_retry": False,
             "resolved_question": question,
             "fallback_question": question,
         }
-    hints, should_retry, member_names, category_names = await _resolve_question_context(
+    timezone_name = runtime.timezone if runtime is not None else "UTC"
+    hints, should_retry, member_names, category_names, time_window = await _resolve_question_context(
         question=question,
         session=session,
         household_id=household_id,
+        today=_today_for_timezone(timezone_name),
+        timezone_name=timezone_name,
     )
     return {
         "context_hints": hints,
         "household_member_names": member_names,
         "household_category_names": category_names,
+        "time_window": time_window,
         "should_fuzzy_retry": should_retry,
         "resolved_question": _augment_question_with_context(
             question,
@@ -686,6 +873,7 @@ async def _graph_run_primary(state: _AnalysisGraphState) -> _AnalysisGraphState:
         runtime=runtime,
         question=question,
         execute_sql=execute_sql,
+        time_window=state.get("time_window"),
     )
     return {"primary_result": primary_result}
 
@@ -752,6 +940,7 @@ async def _graph_run_fallback(state: _AnalysisGraphState) -> _AnalysisGraphState
         runtime=runtime,
         question=fallback_question,
         execute_sql=execute_sql,
+        time_window=state.get("time_window"),
     )
     return {"final_result": _merge_agent_results(primary, fallback_result)}
 
@@ -836,6 +1025,7 @@ async def _run_sql_agent_with_executor(
     runtime: LLMRuntimeConfig,
     question: str,
     execute_sql: SQLExecutor,
+    time_window: _ResolvedTimeWindow | None = None,
 ) -> SQLAgentResult:
     cerebras_model, cerebras_api_key = _resolve_cerebras_runtime(runtime)
     async def llm_callback(system_prompt: str, user_prompt: str) -> dict | None:
@@ -849,7 +1039,7 @@ async def _run_sql_agent_with_executor(
     runner = SQLAgentRunner(
         provider_name="cerebras",
         llm_json=llm_callback,
-        validate_sql=_safe_sql,
+        validate_sql=_build_sql_validator(time_window=time_window),
         execute_sql=execute_sql,
         default_answer=_default_answer,
         model=cerebras_model,

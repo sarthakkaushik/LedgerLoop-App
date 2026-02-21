@@ -1,6 +1,10 @@
+from datetime import date
+
 from app.api.analysis import (
     _augment_question_with_context,
+    _build_sql_validator,
     _extract_description_phrase,
+    _extract_time_window,
     _graph_should_retry,
     _resolve_alias,
 )
@@ -50,6 +54,48 @@ def test_augment_question_appends_context_and_fallback_mode() -> None:
     assert "Known household categories" in augmented
     assert "Resolved context hints" in augmented
     assert "Fallback mode for recall" in augmented
+
+
+def test_extract_time_window_for_last_three_days() -> None:
+    parsed = _extract_time_window(
+        "What categories pooja has spend in last 3 days?",
+        today=date(2026, 2, 21),
+    )
+    assert parsed is not None
+    assert parsed.start_date.isoformat() == "2026-02-19"
+    assert parsed.end_date.isoformat() == "2026-02-21"
+
+
+def test_build_sql_validator_requires_date_filter_when_time_window_exists() -> None:
+    time_window = _extract_time_window("spend in last 3 days", today=date(2026, 2, 21))
+    assert time_window is not None
+    validator = _build_sql_validator(time_window=time_window)
+
+    ok, reason = validator(
+        "SELECT category, SUM(amount) FROM household_expenses "
+        "WHERE status='confirmed' GROUP BY category"
+    )
+    assert ok is False
+    assert "date_incurred" in reason
+
+    ok, reason = validator(
+        "SELECT category, SUM(amount) FROM household_expenses "
+        "WHERE status='confirmed' "
+        "AND date_incurred >= CURRENT_DATE - INTERVAL '2 days' "
+        "AND date_incurred <= CURRENT_DATE "
+        "GROUP BY category"
+    )
+    assert ok is False
+    assert "inclusive bounds" in reason.lower()
+
+    ok, reason = validator(
+        "SELECT category, SUM(amount) FROM household_expenses "
+        "WHERE status='confirmed' "
+        "AND date_incurred BETWEEN '2026-02-19' AND '2026-02-21' "
+        "GROUP BY category"
+    )
+    assert ok is True
+    assert reason == ""
 
 
 def test_graph_retry_path_for_empty_primary_rows() -> None:
