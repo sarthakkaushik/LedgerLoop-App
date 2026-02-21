@@ -4697,7 +4697,6 @@ function AnalyticsPanel({ token, embedded = false }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [showDebug, setShowDebug] = useState(false);
   const analyticsVoice = useVoiceTranscription({
     token,
     onTranscript: (transcript) => {
@@ -4737,7 +4736,6 @@ function AnalyticsPanel({ token, embedded = false }) {
     setText(query);
     setLoading(true);
     setError("");
-    setShowDebug(false);
     try {
       const data = await askAnalysis(token, query);
       setResult(data);
@@ -4748,8 +4746,6 @@ function AnalyticsPanel({ token, embedded = false }) {
       setLoading(false);
     }
   }
-
-  const toolLabel = String(result?.tool || "sql_chat_agent").replace(/_/g, " ");
 
   return (
     <section className={embedded ? "embedded-panel insights-ai-panel" : "panel"}>
@@ -4763,7 +4759,6 @@ function AnalyticsPanel({ token, embedded = false }) {
         </div>
         <div className="insights-ai-hero-meta">
           <span className="insights-agent-badge">Enabled</span>
-          {result && <p className="insights-ai-last-tool">Tool: {toolLabel}</p>}
         </div>
       </div>
 
@@ -4810,47 +4805,12 @@ function AnalyticsPanel({ token, embedded = false }) {
           <article className="result-card insights-result-card insights-assistant-card">
             <div className="row draft-header insights-assistant-header">
               <h3>Assistant</h3>
-              <button
-                type="button"
-                className="btn-ghost insights-debug-button"
-                onClick={() => setShowDebug((prev) => !prev)}
-              >
-                {showDebug ? "Hide technical details" : "Show technical details"}
-              </button>
             </div>
             <article className="assistant-bubble markdown-content">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {result.answer ?? ""}
               </ReactMarkdown>
             </article>
-
-            <div className="analysis-meta insights-analysis-meta">
-              <span className={`route-chip ${result.route}`}>{result.route.toUpperCase()}</span>
-              <span className="tool-chip">{result.tool}</span>
-              <span className="hint">Confidence {Number(result.confidence ?? 0).toFixed(2)}</span>
-              <span className="insights-sql-state">
-                {result.sql ? "SQL trace visible" : "SQL trace hidden"}
-              </span>
-            </div>
-
-            {showDebug && (
-              <>
-                {Array.isArray(result.tool_trace) && result.tool_trace.length > 0 && (
-                  <p className="hint">
-                    Trace: <code>{result.tool_trace.join(" -> ")}</code>
-                  </p>
-                )}
-                {result.sql ? (
-                  <p className="hint">
-                    SQL: <code>{result.sql}</code>
-                  </p>
-                ) : (
-                  <p className="hint">
-                    SQL text is hidden in secure mode, but SQL agent execution is enabled.
-                  </p>
-                )}
-              </>
-            )}
           </article>
 
           {result.chart?.points?.length > 0 && (
