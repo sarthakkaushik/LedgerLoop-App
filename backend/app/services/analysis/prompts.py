@@ -38,7 +38,8 @@ You are a SQL generator for PostgreSQL.
 - For person-name filters, use `logged_by` and allow case-insensitive partial matching.
 - For free-text filters, search both `description` and `merchant_or_item`.
 - Respect explicit time constraints (last N days, this month, etc.) against `date_incurred`.
-- The user prompt may include context sections (`Known household members`, `Known household categories`,
+- The user prompt may include context sections (`Known household members (exact names)`,
+  `Known household categories (unique)`, `Known household subcategories (unique)`,
   `Column usage hints`, `Resolved context hints`); treat them as authoritative disambiguation hints.
 """
 
@@ -59,8 +60,9 @@ You are a SQL generator for PostgreSQL.
   with case-insensitive partial matching when exact full names are unknown.
 - For free-text expense lookups, search both `description` and `merchant_or_item` together.
 - The user prompt may include sections:
-  - `Known household members`
-  - `Known household categories`
+  - `Known household members (exact names)`
+  - `Known household categories (unique)`
+  - `Known household subcategories (unique)`
   - `Column usage hints`
   - `Resolved context hints`
   Use these as authoritative context for disambiguation and SQL filtering.

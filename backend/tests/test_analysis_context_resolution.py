@@ -49,10 +49,12 @@ def test_augment_question_appends_context_and_fallback_mode() -> None:
         hints=["Person mention 'pooja' maps to household member 'Pooja Sharma'."],
         household_member_names=["Pooja Sharma", "Amit Verma"],
         household_category_names=["Food", "Groceries", "Healthcare"],
+        household_subcategory_names=["Snacks", "Vegetables", "Dining Out"],
         fuzzy_mode=True,
     )
     assert "Known household members" in augmented
     assert "Known household categories" in augmented
+    assert "Known household subcategories" in augmented
     assert "Column usage hints" in augmented
     assert "Resolved context hints" in augmented
     assert "Fallback mode for recall" in augmented

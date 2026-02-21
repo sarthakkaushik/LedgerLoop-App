@@ -104,6 +104,7 @@ class _AnalysisGraphState(TypedDict, total=False):
     context_hints: list[str]
     household_member_names: list[str]
     household_category_names: list[str]
+    household_subcategory_names: list[str]
     time_window: _ResolvedTimeWindow | None
     should_fuzzy_retry: bool
     runtime: LLMRuntimeConfig
@@ -573,6 +574,13 @@ async def _load_resolution_candidates(
         session,
         household_id=household_id,
     )
+    unique_categories = sorted(
+        {
+            str(category).strip()
+            for category in categories
+            if category and str(category).strip()
+        }
+    )
     subcategories = sorted(
         {
             str(subcategory).strip()
@@ -581,7 +589,7 @@ async def _load_resolution_candidates(
             if subcategory and str(subcategory).strip()
         }
     )
-    return member_names, categories, subcategories
+    return member_names, unique_categories, subcategories
 
 
 async def _load_household_date_bounds(
@@ -613,7 +621,7 @@ async def _resolve_question_context(
     session: AsyncSession,
     household_id: UUID,
     timezone_name: str,
-) -> tuple[list[str], bool, list[str], list[str], _ResolvedTimeWindow | None]:
+) -> tuple[list[str], bool, list[str], list[str], list[str], _ResolvedTimeWindow | None]:
     hints: list[str] = []
     should_fuzzy_retry = False
     time_window = None
@@ -692,7 +700,7 @@ async def _resolve_question_context(
         )
         should_fuzzy_retry = True
 
-    return hints, should_fuzzy_retry, member_names, categories, time_window
+    return hints, should_fuzzy_retry, member_names, categories, subcategories, time_window
 
 
 def _augment_question_with_context(
@@ -701,19 +709,29 @@ def _augment_question_with_context(
     hints: list[str],
     household_member_names: list[str],
     household_category_names: list[str],
+    household_subcategory_names: list[str],
     fuzzy_mode: bool,
 ) -> str:
     clean_question = question.strip()
-    if not hints and not fuzzy_mode and not household_member_names and not household_category_names:
+    if (
+        not hints
+        and not fuzzy_mode
+        and not household_member_names
+        and not household_category_names
+        and not household_subcategory_names
+    ):
         return clean_question
 
     sections = [clean_question]
     if household_member_names:
         member_lines = "\n".join(f"- {name}" for name in household_member_names[:20])
-        sections.append(f"Known household members:\n{member_lines}")
+        sections.append(f"Known household members (exact names):\n{member_lines}")
     if household_category_names:
         category_lines = "\n".join(f"- {name}" for name in household_category_names[:30])
-        sections.append(f"Known household categories:\n{category_lines}")
+        sections.append(f"Known household categories (unique):\n{category_lines}")
+    if household_subcategory_names:
+        subcategory_lines = "\n".join(f"- {name}" for name in household_subcategory_names[:50])
+        sections.append(f"Known household subcategories (unique):\n{subcategory_lines}")
     sections.append(
         "Column usage hints:\n"
         "- Person/member name: logged_by\n"
@@ -795,13 +813,14 @@ async def _graph_resolve_context(state: _AnalysisGraphState) -> _AnalysisGraphSt
             "context_hints": _EMPTY_HINTS,
             "household_member_names": [],
             "household_category_names": [],
+            "household_subcategory_names": [],
             "time_window": None,
             "should_fuzzy_retry": False,
             "resolved_question": question,
             "fallback_question": question,
         }
     timezone_name = runtime.timezone if runtime is not None else "UTC"
-    hints, should_retry, member_names, category_names, time_window = await _resolve_question_context(
+    hints, should_retry, member_names, category_names, subcategory_names, time_window = await _resolve_question_context(
         question=question,
         session=session,
         household_id=household_id,
@@ -811,6 +830,7 @@ async def _graph_resolve_context(state: _AnalysisGraphState) -> _AnalysisGraphSt
         "context_hints": hints,
         "household_member_names": member_names,
         "household_category_names": category_names,
+        "household_subcategory_names": subcategory_names,
         "time_window": time_window,
         "should_fuzzy_retry": should_retry,
         "resolved_question": _augment_question_with_context(
@@ -818,6 +838,7 @@ async def _graph_resolve_context(state: _AnalysisGraphState) -> _AnalysisGraphSt
             hints=hints,
             household_member_names=member_names,
             household_category_names=category_names,
+            household_subcategory_names=subcategory_names,
             fuzzy_mode=False,
         ),
         "fallback_question": _augment_question_with_context(
@@ -825,6 +846,7 @@ async def _graph_resolve_context(state: _AnalysisGraphState) -> _AnalysisGraphSt
             hints=hints,
             household_member_names=member_names,
             household_category_names=category_names,
+            household_subcategory_names=subcategory_names,
             fuzzy_mode=True,
         ),
     }
