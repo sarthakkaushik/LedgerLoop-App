@@ -47,7 +47,7 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  min-height: 100vh;
 }
 
 body {
@@ -60,6 +60,13 @@ body {
     radial-gradient(1200px 560px at -8% -18%, #edf3ff 0, transparent 62%),
     radial-gradient(920px 520px at 108% -12%, #e8f5ff 0, transparent 58%),
     linear-gradient(160deg, #f8fafd 0%, #f2f5fa 52%, #edf1f6 100%);
+}
+
+body.app-theme-unified {
+  background:
+    radial-gradient(1200px 560px at -8% -18%, rgba(255, 107, 53, 0.16) 0, transparent 62%),
+    radial-gradient(920px 520px at 108% -12%, rgba(167, 139, 250, 0.15) 0, transparent 58%),
+    linear-gradient(160deg, #0f0e17 0%, #151425 52%, #11101f 100%);
 }
 
 h1,
@@ -2034,8 +2041,8 @@ a:focus-visible {
 
 .insights-person-chart {
   display: grid;
-  grid-template-columns: 68px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 10px;
   align-items: stretch;
 }
 
@@ -2047,7 +2054,7 @@ a:focus-visible {
   position: absolute;
   right: 0;
   transform: translateY(-50%);
-  font-size: 11px;
+  font-size: 10px;
   color: #a7a9be;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -2055,8 +2062,8 @@ a:focus-visible {
 
 .insights-person-plot {
   position: relative;
-  min-height: 298px;
-  padding: 12px 6px 4px;
+  min-height: 272px;
+  padding: 18px 10px 8px;
 }
 
 .insights-person-grid-line {
@@ -2070,8 +2077,9 @@ a:focus-visible {
 .insights-person-bars {
   height: 100%;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 138px));
+  justify-content: center;
+  gap: 16px;
   align-items: end;
   position: relative;
   z-index: 1;
@@ -2085,9 +2093,9 @@ a:focus-visible {
 
 .insights-person-bar-track {
   width: 100%;
-  max-width: 180px;
-  height: 220px;
-  border-radius: 12px;
+  max-width: 138px;
+  height: 188px;
+  border-radius: 14px;
   border: 1px solid #34334b;
   background: linear-gradient(180deg, #1c1b2d, #161525);
   display: flex;
@@ -2097,19 +2105,26 @@ a:focus-visible {
 
 .insights-person-bar-fill {
   width: 100%;
-  border-radius: 10px 10px 0 0;
+  border-radius: 12px 12px 0 0;
 }
 
 .insights-person-bar-name {
   margin: 0;
   font-weight: 700;
   color: #d8d9eb;
+  text-align: center;
+  line-height: 1.2;
 }
 
 .insights-person-bar-value {
   margin: 0;
   font-size: 12px;
-  color: #fffffe;
+  color: #cfd1e5;
+  font-variant-numeric: tabular-nums;
+}
+
+.insights-card-person h3 {
+  margin-bottom: 14px;
 }
 
 .insights-pie-shell {
@@ -3734,15 +3749,15 @@ a:focus-visible {
   }
 
   .insights-person-chart {
-    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-columns: 60px minmax(0, 1fr);
   }
 
   .insights-person-plot {
-    min-height: 252px;
+    min-height: 238px;
   }
 
   .insights-person-bar-track {
-    height: 188px;
+    height: 172px;
   }
 
   .insights-ai-hero {
@@ -3774,7 +3789,7 @@ a:focus-visible {
   }
 
   .insights-person-bars {
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   }
 }
 
@@ -4371,6 +4386,37 @@ a:focus-visible {
   border-color: rgba(247, 197, 159, 0.58);
   background: rgba(247, 197, 159, 0.14);
   color: #ffd9c1;
+}
+
+.app-shell-unified .recurring-switch {
+  border-color: #4a4964;
+  background: #25243a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.app-shell-unified .recurring-switch:hover:not(:disabled) {
+  border-color: #636183;
+  background: #2d2c44;
+}
+
+.app-shell-unified .recurring-switch:focus-visible {
+  outline: 2px solid rgba(255, 159, 127, 0.68);
+  outline-offset: 2px;
+}
+
+.app-shell-unified .recurring-switch.on {
+  border-color: rgba(78, 205, 196, 0.68);
+  background: linear-gradient(145deg, #37c0b6, #238e88);
+  box-shadow: 0 8px 16px rgba(35, 142, 136, 0.32);
+}
+
+.app-shell-unified .recurring-switch-thumb {
+  background: #f6f8fb;
+  box-shadow: 0 2px 8px rgba(3, 4, 9, 0.45);
+}
+
+.app-shell-unified .recurring-switch.on .recurring-switch-thumb {
+  background: #ffffff;
 }
 
 .app-shell-unified .tool-chip {

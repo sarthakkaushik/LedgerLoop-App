@@ -3769,6 +3769,10 @@ const INSIGHTS_CATEGORY_COLORS = [
 
 const INSIGHTS_PERSON_COLORS = ["#ff6b35", "#4ecdc4", "#a78bfa", "#f7c59f"];
 
+function clampValue(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function buildSmoothSvgPath(points, smoothing = 0.16) {
   if (!Array.isArray(points) || points.length === 0) return "";
   if (points.length === 1) {
@@ -3782,13 +3786,42 @@ function buildSmoothSvgPath(points, smoothing = 0.16) {
     const current = points[index];
     const next = points[index + 1];
     const nextNext = points[index + 2] || next;
+    const segmentMinY = Math.min(current.y, next.y);
+    const segmentMaxY = Math.max(current.y, next.y);
     const controlOneX = current.x + (next.x - previous.x) * smoothing;
-    const controlOneY = current.y + (next.y - previous.y) * smoothing;
+    const controlOneY = clampValue(
+      current.y + (next.y - previous.y) * smoothing,
+      segmentMinY,
+      segmentMaxY
+    );
     const controlTwoX = next.x - (nextNext.x - current.x) * smoothing;
-    const controlTwoY = next.y - (nextNext.y - current.y) * smoothing;
+    const controlTwoY = clampValue(
+      next.y - (nextNext.y - current.y) * smoothing,
+      segmentMinY,
+      segmentMaxY
+    );
     path += ` C ${controlOneX.toFixed(2)} ${controlOneY.toFixed(2)} ${controlTwoX.toFixed(2)} ${controlTwoY.toFixed(2)} ${next.x.toFixed(2)} ${next.y.toFixed(2)}`;
   }
   return path;
+}
+
+function formatAxisDayMonth(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
+    ? new Date(`${normalized}T00:00:00`)
+    : new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return normalized;
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+    })
+      .format(parsed)
+      .replace(" ", "-");
+  } catch {
+    return normalized;
+  }
 }
 
 function describePieSlicePath(centerX, centerY, radius, startAngle, endAngle) {
@@ -4219,7 +4252,7 @@ function DashboardPanel({ token, embedded = false }) {
                           textAnchor="middle"
                           className="insights-line-axis-label"
                         >
-                          {String(point.day).slice(5)}
+                          {formatAxisDayMonth(point.day)}
                         </text>
                       ))}
                     </svg>
@@ -4348,14 +4381,14 @@ function DashboardPanel({ token, embedded = false }) {
                 ) : (
                   <div className="insights-person-chart">
                     <div className="insights-person-y-axis">
-                      {personAxisTicks.map((tick, index) => (
-                        <span
-                          key={`person-axis-${index}`}
-                          style={{ bottom: `calc(${(1 - tick.ratio) * 100}% - 9px)` }}
-                        >
-                          {formatCompactCurrencyValue(tick.value, dashboardCurrency)}
-                        </span>
-                      ))}
+                      {personAxisTicks.map((tick, index) => {
+                        const axisBottom = clampValue((1 - tick.ratio) * 100, 5, 95);
+                        return (
+                          <span key={`person-axis-${index}`} style={{ bottom: `${axisBottom}%` }}>
+                            {formatCompactCurrencyValue(tick.value, dashboardCurrency)}
+                          </span>
+                        );
+                      })}
                     </div>
 
                     <div className="insights-person-plot">
@@ -4934,6 +4967,14 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => safeStorageGet("expense_workspace_sidebar_collapsed") === "1"
   );
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    document.body.classList.add("app-theme-unified");
+    return () => {
+      document.body.classList.remove("app-theme-unified");
+    };
+  }, []);
 
   useEffect(() => {
     if (auth?.token) {
