@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     cerebras_api_key: str | None = None
     cerebras_model: str = "gpt-oss-120b"
     groq_api_key: str | None = None
+    groq_model: str = "moonshotai/kimi-k2-instruct-0905"
     groq_whisper_model: str = "whisper-large-v3-turbo"
     voice_max_upload_mb: int = 10
 

@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from app.services.analysis.prompts import (
-    HARDCODED_SQL_AGENT_SYSTEM_PROMPT,
-    SQL_FIXER_SYSTEM_PROMPT,
-    build_sql_fixer_user_prompt,
+    SPEND_ANALYSIS_AGENT_SYSTEM_PROMPT,
 )
 
 CellValue = str | float | int
@@ -45,7 +44,6 @@ class SQLAgentRunner:
         self,
         *,
         provider_name: str,
-        llm_json: Callable[[str, str], Awaitable[dict | None]],
         validate_sql: Callable[[str], tuple[bool, str]],
         execute_sql: Callable[[str], Awaitable[tuple[Cols, Rows]]],
         default_answer: Callable[[str, Cols, Rows], str],
@@ -53,7 +51,6 @@ class SQLAgentRunner:
         api_key: str | None,
     ) -> None:
         self.provider_name = provider_name.lower().strip()
-        self._llm_json = llm_json
         self._validate_sql = validate_sql
         self._execute_sql = execute_sql
         self._default_answer = default_answer
@@ -61,31 +58,32 @@ class SQLAgentRunner:
         self.api_key = api_key
 
     async def run(self, question: str, max_attempts: int = 3) -> SQLAgentResult:
-        if self.provider_name != "cerebras":
+        if self.provider_name not in {"cerebras", "groq"}:
             return SQLAgentResult(
                 success=False,
                 final_sql="",
-                answer="Analytics SQL agent requires Cerebras provider.",
+                answer="Analytics SQL agent requires Groq or Cerebras provider.",
                 attempts=[],
                 columns=[],
                 rows=[],
                 tool_trace=["tool_select"],
-                failure_reason="Provider is not cerebras.",
+                failure_reason="Provider is not supported for SQL agent.",
             )
         if not self.api_key:
+            provider_label = self.provider_name.upper()
             return SQLAgentResult(
                 success=False,
                 final_sql="",
-                answer="Cerebras API key is missing for analytics SQL agent.",
+                answer=f"{provider_label} API key is missing for analytics SQL agent.",
                 attempts=[],
                 columns=[],
                 rows=[],
                 tool_trace=["tool_select"],
-                failure_reason="Missing CEREBRAS API key.",
+                failure_reason=f"Missing {provider_label} API key.",
             )
-        return await self._run_langchain_cerebras(question=question, max_attempts=max_attempts)
+        return await self._run_langchain_tool_agent(question=question, max_attempts=max_attempts)
 
-    async def _run_langchain_cerebras(
+    async def _run_langchain_tool_agent(
         self,
         *,
         question: str,
@@ -95,12 +93,16 @@ class SQLAgentRunner:
             from langchain.agents import create_agent
             from langchain.tools import tool
             from langchain_cerebras import ChatCerebras
+            from langchain_groq import ChatGroq
         except Exception as exc:  # pragma: no cover - dependency runtime path
             raise RuntimeError(
-                "LangChain Cerebras dependencies missing. Install langchain-cerebras."
+                "LangChain SQL agent dependencies missing. Install langchain-cerebras and langchain-groq."
             ) from exc
 
-        os.environ["CEREBRAS_API_KEY"] = str(self.api_key)
+        if self.provider_name == "cerebras":
+            os.environ["CEREBRAS_API_KEY"] = str(self.api_key)
+        if self.provider_name == "groq":
+            os.environ["GROQ_API_KEY"] = str(self.api_key)
 
         attempts: list[SQLAgentAttempt] = []
         tool_trace: list[str] = ["tool_select"]
@@ -109,108 +111,143 @@ class SQLAgentRunner:
         final_rows: Rows = []
         last_error: str | None = None
 
-        async def _repair_sql(failed_sql: str, db_error: str) -> tuple[str | None, str | None]:
-            payload = await self._llm_json(
-                SQL_FIXER_SYSTEM_PROMPT,
-                build_sql_fixer_user_prompt(
-                    question=question,
-                    failed_sql=failed_sql,
-                    db_error=db_error,
-                ),
+        status_map = {
+            "approved": "confirmed",
+            "confirm": "confirmed",
+            "confirmed": "confirmed",
+            "pending": "draft",
+            "draft": "draft",
+        }
+
+        def _normalize_sql(query: str) -> str:
+            normalized = query.strip().rstrip(";")
+
+            def _rewrite_status(match) -> str:
+                raw = str(match.group(1)).strip().lower()
+                resolved = status_map.get(raw, raw)
+                return f"LOWER(CAST(status AS TEXT)) = '{resolved}'"
+
+            return re.sub(
+                r"\bstatus\s*=\s*'([^']+)'",
+                _rewrite_status,
+                normalized,
+                flags=re.IGNORECASE,
             )
-            fixed_sql = str((payload or {}).get("sql", "")).strip() or None
-            reason = str((payload or {}).get("reason", "")).strip() or None
-            return fixed_sql, reason
 
         @tool("run_sql_query")
-        async def run_sql_query(sql: str) -> dict[str, Any]:
+        async def run_sql_query(sql: str) -> list[dict[str, Any]]:
             """
             Execute SQL against household_expenses and return rows.
             """
 
             nonlocal final_sql, final_cols, final_rows, last_error
 
+            attempt_number = len(attempts) + 1
+            if attempt_number > max_attempts:
+                raise ValueError(f"Exceeded max SQL attempts ({max_attempts}).")
+
             tool_trace.append("sql_generate")
-            current_sql = sql.strip()
+            current_sql = _normalize_sql(sql)
             if not current_sql:
-                return {"ok": False, "error": "Agent produced empty SQL."}
-
-            next_reason = "agent_generated_sql"
-            for attempt_number in range(1, max_attempts + 1):
-                tool_trace.append("sql_validate")
-                validation_ok, validation_reason = self._validate_sql(current_sql)
-                execution_ok = False
-                db_error: str | None = None
-                cols: Cols = []
-                rows: Rows = []
-
-                if validation_ok:
-                    tool_trace.append("sql_execute")
-                    try:
-                        cols, rows = await self._execute_sql(current_sql)
-                        execution_ok = True
-                        final_sql = current_sql
-                        final_cols = cols
-                        final_rows = rows
-                    except Exception as exc:  # pragma: no cover - backend/runtime dependent
-                        db_error = str(exc)
-                        last_error = db_error
-                else:
-                    db_error = validation_reason
-                    last_error = validation_reason
-
+                last_error = "Agent produced empty SQL."
                 attempts.append(
                     SQLAgentAttempt(
                         attempt_number=attempt_number,
                         generated_sql=current_sql,
-                        llm_reason=next_reason,
-                        validation_ok=validation_ok,
-                        validation_reason=validation_reason if not validation_ok else None,
-                        execution_ok=execution_ok,
-                        db_error=db_error if not execution_ok else None,
+                        llm_reason="agent_generated_sql",
+                        validation_ok=False,
+                        validation_reason=last_error,
+                        execution_ok=False,
+                        db_error=last_error,
                     )
                 )
+                raise ValueError(last_error)
 
-                if execution_ok:
-                    return {
-                        "ok": True,
-                        "sql": current_sql,
-                        "columns": cols,
-                        "rows": rows,
-                    }
-                if attempt_number >= max_attempts:
-                    break
-
-                tool_trace.append(f"sql_fix_{attempt_number + 1}")
-                fixed_sql, fix_reason = await _repair_sql(
-                    failed_sql=current_sql,
-                    db_error=last_error or "unknown execution error",
+            tool_trace.append("sql_validate")
+            validation_ok, validation_reason = self._validate_sql(current_sql)
+            if not validation_ok:
+                last_error = validation_reason or "SQL validation failed."
+                attempts.append(
+                    SQLAgentAttempt(
+                        attempt_number=attempt_number,
+                        generated_sql=current_sql,
+                        llm_reason="agent_generated_sql",
+                        validation_ok=False,
+                        validation_reason=validation_reason,
+                        execution_ok=False,
+                        db_error=last_error,
+                    )
                 )
-                if not fixed_sql:
-                    break
-                current_sql = fixed_sql
-                next_reason = fix_reason or "sql_fix_retry"
+                raise ValueError(last_error)
 
-            return {
-                "ok": False,
-                "sql": current_sql,
-                "error": last_error or "SQL execution failed.",
-            }
+            tool_trace.append("sql_execute")
+            try:
+                cols, rows = await self._execute_sql(current_sql)
+            except Exception as exc:  # pragma: no cover - backend/runtime dependent
+                last_error = str(exc)
+                attempts.append(
+                    SQLAgentAttempt(
+                        attempt_number=attempt_number,
+                        generated_sql=current_sql,
+                        llm_reason="agent_generated_sql",
+                        validation_ok=True,
+                        validation_reason=None,
+                        execution_ok=False,
+                        db_error=last_error,
+                    )
+                )
+                raise ValueError(last_error)
 
-        llm = ChatCerebras(
-            model=self.model,
-            api_key=self.api_key,
-            temperature=0,
-        )
+            final_sql = current_sql
+            final_cols = cols
+            final_rows = rows
+            attempts.append(
+                SQLAgentAttempt(
+                    attempt_number=attempt_number,
+                    generated_sql=current_sql,
+                    llm_reason="agent_generated_sql",
+                    validation_ok=True,
+                    validation_reason=None,
+                    execution_ok=True,
+                    db_error=None,
+                )
+            )
+            return [dict(zip(cols, row, strict=False)) for row in rows]
+
+        if self.provider_name == "groq":
+            llm = ChatGroq(
+                model=self.model,
+                api_key=self.api_key,
+                temperature=0,
+            )
+        else:
+            llm = ChatCerebras(
+                model=self.model,
+                api_key=self.api_key,
+                temperature=0,
+            )
         agent = create_agent(
             model=llm,
             tools=[run_sql_query],
-            system_prompt=HARDCODED_SQL_AGENT_SYSTEM_PROMPT,
+            system_prompt=SPEND_ANALYSIS_AGENT_SYSTEM_PROMPT,
         )
 
-        response = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": question}]}
-        )
+        try:
+            response = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": question}]}
+            )
+        except Exception as exc:  # pragma: no cover - backend/runtime dependent
+            failure_reason = str(exc)
+            return SQLAgentResult(
+                success=False,
+                final_sql=attempts[-1].generated_sql if attempts else "",
+                answer=f"SQL execution failed after {len(attempts)} attempt(s): {failure_reason}",
+                attempts=attempts,
+                columns=[],
+                rows=[],
+                tool_trace=tool_trace,
+                failure_reason=failure_reason,
+            )
 
         answer = _extract_langchain_agent_answer(response).strip()
         success = any(attempt.execution_ok for attempt in attempts)

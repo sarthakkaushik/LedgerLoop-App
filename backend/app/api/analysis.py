@@ -10,7 +10,6 @@ from typing import Any, TypedDict
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-import httpx
 from fastapi import APIRouter, Depends
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import text
@@ -35,7 +34,6 @@ from app.services.analysis.sql_agent import (
     SQLAgentAttempt,
     SQLAgentResult,
     SQLAgentRunner,
-    extract_json_payload,
 )
 from app.services.analysis.sql_validation import validate_safe_sql
 from app.services.llm.settings_service import LLMRuntimeConfig, get_env_runtime_config
@@ -151,40 +149,6 @@ def _today_for_timezone(timezone_name: str) -> date:
 
 def _safe_sql(query: str) -> tuple[bool, str]:
     return validate_safe_sql(query, allowed_tables={"household_expenses"})
-
-
-async def _llm_json(
-    *,
-    model: str,
-    api_key: str | None,
-    system_prompt: str,
-    user_prompt: str,
-) -> dict | None:
-    if not api_key:
-        return None
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0,
-    }
-    headers = {"Authorization": f"Bearer {api_key}"}
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-            response = await client.post(
-                "https://api.cerebras.ai/v1/chat/completions",
-                json=payload,
-                headers=headers,
-            )
-            response.raise_for_status()
-            raw_content = response.json()["choices"][0]["message"]["content"]
-            if isinstance(raw_content, str):
-                return extract_json_payload(raw_content)
-            return extract_json_payload(str(raw_content))
-    except Exception:
-        return None
 
 
 def _cell(value: Any) -> str | float | int:
@@ -1013,14 +977,22 @@ async def _run_sql_agent(
     )
 
 
-def _resolve_cerebras_runtime(runtime: LLMRuntimeConfig) -> tuple[str, str | None]:
+def _resolve_sql_agent_runtime(runtime: LLMRuntimeConfig) -> tuple[str, str, str | None]:
+    configured_provider = settings.llm_provider.strip().lower()
+    has_groq_key = bool(settings.groq_api_key and settings.groq_api_key.strip())
+    has_cerebras_key = bool(settings.cerebras_api_key and settings.cerebras_api_key.strip())
+    if configured_provider == "groq" or (has_groq_key and configured_provider != "cerebras" and not has_cerebras_key):
+        groq_model = settings.groq_model.strip() or runtime.model
+        groq_api_key = settings.groq_api_key.strip() if has_groq_key else None
+        return "groq", groq_model, groq_api_key
+
     cerebras_model = settings.cerebras_model.strip() or runtime.model
     cerebras_api_key = (
         settings.cerebras_api_key.strip()
         if settings.cerebras_api_key and settings.cerebras_api_key.strip()
         else (runtime.api_key if runtime.provider.value == "cerebras" else None)
     )
-    return cerebras_model, cerebras_api_key
+    return "cerebras", cerebras_model, cerebras_api_key
 
 
 async def _run_sql_agent_with_executor(
@@ -1030,23 +1002,14 @@ async def _run_sql_agent_with_executor(
     execute_sql: SQLExecutor,
     time_window: _ResolvedTimeWindow | None = None,
 ) -> SQLAgentResult:
-    cerebras_model, cerebras_api_key = _resolve_cerebras_runtime(runtime)
-    async def llm_callback(system_prompt: str, user_prompt: str) -> dict | None:
-        return await _llm_json(
-            model=cerebras_model,
-            api_key=cerebras_api_key,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-        )
-
+    provider_name, model_name, api_key = _resolve_sql_agent_runtime(runtime)
     runner = SQLAgentRunner(
-        provider_name="cerebras",
-        llm_json=llm_callback,
+        provider_name=provider_name,
         validate_sql=_build_sql_validator(time_window=time_window),
         execute_sql=execute_sql,
         default_answer=_default_answer,
-        model=cerebras_model,
-        api_key=cerebras_api_key,
+        model=model_name,
+        api_key=api_key,
     )
     return await runner.run(question, max_attempts=3)
 
@@ -1100,13 +1063,13 @@ async def ask_analysis(
     question = payload.text.strip()
 
     query_log = None
-    log_model = settings.cerebras_model.strip() or runtime.model
+    log_provider, log_model, _ = _resolve_sql_agent_runtime(runtime)
     try:
         query_log = await create_query_log(
             session,
             household_id=user.household_id,
             user_id=user.id,
-            provider="cerebras",
+            provider=log_provider,
             model=log_model,
             question=question,
             mode="analytics",
@@ -1245,14 +1208,14 @@ async def ask_analysis_e2e_postgres(
             table=None,
         )
 
-    log_model, _ = _resolve_cerebras_runtime(runtime)
+    log_provider, log_model, _ = _resolve_sql_agent_runtime(runtime)
     query_log = None
     try:
         query_log = await create_query_log(
             session,
             household_id=user.household_id,
             user_id=user.id,
-            provider="cerebras",
+            provider=log_provider,
             model=log_model,
             question=question,
             mode="analytics",
