@@ -3,15 +3,18 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime
 from decimal import Decimal
+from difflib import SequenceMatcher
 import re
-from typing import Any
+from typing import Any, TypedDict
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, Depends
+from langgraph.graph import END, START, StateGraph
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlmodel import select
 
 from app.api.deps import get_current_user
 from app.core.config import get_settings
@@ -28,12 +31,14 @@ from app.services.analysis.logging_service import (
     finalize_query_log,
 )
 from app.services.analysis.sql_agent import (
+    SQLAgentAttempt,
     SQLAgentResult,
     SQLAgentRunner,
     extract_json_payload,
 )
 from app.services.analysis.sql_validation import validate_safe_sql
 from app.services.llm.settings_service import LLMRuntimeConfig, get_env_runtime_config
+from app.services.taxonomy_service import build_household_taxonomy_map
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 settings = get_settings()
@@ -47,6 +52,47 @@ _INTERNAL_TOKEN_RE = re.compile(
     r"\b(?:expense_id|household_id|logged_by_user_id|user_id)\b",
     flags=re.IGNORECASE,
 )
+_NON_WORD_RE = re.compile(r"[^a-z0-9]+")
+_PERSON_FRAGMENT_PATTERNS = [
+    re.compile(
+        r"\bhow\s+much\s+([a-z][a-z\s.'-]{1,40}?)\s+(?:spend|spent|pay|paid|pays)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:spent|spend|paid|pay)\s+by\s+([a-z][a-z\s.'-]{1,40})\b", flags=re.IGNORECASE),
+    re.compile(r"\b([a-z][a-z\s.'-]{1,40})['’]s\s+(?:spend|spending|expenses?)\b", flags=re.IGNORECASE),
+]
+_CATEGORY_FRAGMENT_PATTERNS = [
+    re.compile(r"\b(?:on|for|in|under)\s+([a-z][a-z0-9\s&/_-]{1,40})\s+category\b", flags=re.IGNORECASE),
+    re.compile(r"\bcategory\s+(?:is\s+)?([a-z][a-z0-9\s&/_-]{1,40})\b", flags=re.IGNORECASE),
+]
+_SUBCATEGORY_FRAGMENT_PATTERNS = [
+    re.compile(
+        r"\b(?:on|for|in|under)\s+([a-z][a-z0-9\s&/_-]{1,40})\s+subcategory\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(r"\bsubcategory\s+(?:is\s+)?([a-z][a-z0-9\s&/_-]{1,40})\b", flags=re.IGNORECASE),
+]
+_QUOTED_PHRASE_RE = re.compile(r"[\"']([^\"']{2,80})[\"']")
+_DESCRIPTION_FRAGMENT_RE = re.compile(
+    r"\b(?:description|merchant|item|memo|note)\s+"
+    r"(?:contains|contain|like|with|matching)\s+([a-z0-9][a-z0-9\s&/_-]{1,80})",
+    flags=re.IGNORECASE,
+)
+_EMPTY_HINTS: list[str] = []
+
+
+class _AnalysisGraphState(TypedDict, total=False):
+    question: str
+    resolved_question: str
+    fallback_question: str
+    context_hints: list[str]
+    should_fuzzy_retry: bool
+    runtime: LLMRuntimeConfig
+    execute_sql: SQLExecutor
+    household_id: UUID
+    session: AsyncSession
+    primary_result: SQLAgentResult
+    final_result: SQLAgentResult
 
 
 HOUSEHOLD_CTE = """
@@ -326,6 +372,390 @@ def _default_answer(
     return f"I found {len(rows)} row(s) for '{question}'."
 
 
+def _normalize_fragment(value: str) -> str:
+    collapsed = _NON_WORD_RE.sub(" ", value.lower()).strip()
+    return " ".join(collapsed.split())
+
+
+def _clean_extracted_fragment(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized_space = " ".join(raw.split())
+    trimmed = re.sub(r"\b(?:category|subcategory|description)\b$", "", normalized_space, flags=re.IGNORECASE)
+    return " ".join(trimmed.strip().split())
+
+
+def _extract_first_fragment(question: str, patterns: list[re.Pattern[str]]) -> str:
+    for pattern in patterns:
+        match = pattern.search(question)
+        if not match:
+            continue
+        extracted = _clean_extracted_fragment(match.group(1))
+        if extracted:
+            return extracted
+    return ""
+
+
+def _extract_description_phrase(question: str) -> str:
+    quoted = _QUOTED_PHRASE_RE.search(question)
+    if quoted:
+        phrase = _clean_extracted_fragment(quoted.group(1))
+        if phrase:
+            return phrase
+    match = _DESCRIPTION_FRAGMENT_RE.search(question)
+    if not match:
+        return ""
+    return _clean_extracted_fragment(match.group(1))
+
+
+def _match_score(fragment: str, candidate: str) -> float:
+    fragment_norm = _normalize_fragment(fragment)
+    candidate_norm = _normalize_fragment(candidate)
+    if not fragment_norm or not candidate_norm:
+        return 0.0
+    if fragment_norm == candidate_norm:
+        return 1.0
+    if candidate_norm.startswith(f"{fragment_norm} "):
+        return 0.96
+    if f" {fragment_norm} " in f" {candidate_norm} ":
+        return 0.92
+    fragment_tokens = set(fragment_norm.split())
+    candidate_tokens = set(candidate_norm.split())
+    overlap = (
+        len(fragment_tokens & candidate_tokens) / len(fragment_tokens)
+        if fragment_tokens
+        else 0.0
+    )
+    seq_ratio = SequenceMatcher(None, fragment_norm, candidate_norm).ratio()
+    return max(overlap * 0.92, seq_ratio * 0.78)
+
+
+def _resolve_alias(fragment: str, candidates: list[str], *, min_score: float = 0.6) -> tuple[str | None, list[str]]:
+    cleaned_fragment = _clean_extracted_fragment(fragment)
+    if not cleaned_fragment:
+        return None, []
+    scored: list[tuple[float, str]] = []
+    for candidate in candidates:
+        score = _match_score(cleaned_fragment, candidate)
+        if score >= min_score:
+            scored.append((score, candidate))
+    if not scored:
+        return None, []
+    scored.sort(key=lambda item: item[0], reverse=True)
+    top_score, top_candidate = scored[0]
+    close_candidates = [
+        candidate
+        for score, candidate in scored
+        if score >= max(top_score - 0.03, min_score)
+    ]
+    if len(close_candidates) == 1:
+        return top_candidate, []
+    return None, close_candidates[:3]
+
+
+async def _load_resolution_candidates(
+    session: AsyncSession,
+    *,
+    household_id: UUID,
+) -> tuple[list[str], list[str], list[str]]:
+    members_result = await session.execute(
+        select(User.full_name).where(
+            User.household_id == household_id,
+            User.is_active.is_(True),
+        )
+    )
+    member_names = sorted(
+        {
+            str(name).strip()
+            for name in members_result.scalars().all()
+            if name and str(name).strip()
+        }
+    )
+    categories, taxonomy = await build_household_taxonomy_map(
+        session,
+        household_id=household_id,
+    )
+    subcategories = sorted(
+        {
+            str(subcategory).strip()
+            for values in taxonomy.values()
+            for subcategory in values
+            if subcategory and str(subcategory).strip()
+        }
+    )
+    return member_names, categories, subcategories
+
+
+async def _resolve_question_context(
+    *,
+    question: str,
+    session: AsyncSession,
+    household_id: UUID,
+) -> tuple[list[str], bool]:
+    hints: list[str] = []
+    should_fuzzy_retry = False
+    member_names, categories, subcategories = await _load_resolution_candidates(
+        session,
+        household_id=household_id,
+    )
+
+    person_fragment = _extract_first_fragment(question, _PERSON_FRAGMENT_PATTERNS)
+    if person_fragment:
+        resolved_person, ambiguous_people = _resolve_alias(person_fragment, member_names, min_score=0.58)
+        if resolved_person:
+            hints.append(
+                f"Person mention '{person_fragment}' maps to household member '{resolved_person}'."
+            )
+            should_fuzzy_retry = True
+        elif ambiguous_people:
+            hints.append(
+                "Person mention "
+                f"'{person_fragment}' is ambiguous across: {', '.join(ambiguous_people)}."
+            )
+            should_fuzzy_retry = True
+
+    category_fragment = _extract_first_fragment(question, _CATEGORY_FRAGMENT_PATTERNS)
+    if category_fragment:
+        resolved_category, ambiguous_categories = _resolve_alias(
+            category_fragment,
+            categories,
+            min_score=0.55,
+        )
+        if resolved_category:
+            hints.append(
+                f"Category mention '{category_fragment}' maps to '{resolved_category}'."
+            )
+            should_fuzzy_retry = True
+        elif ambiguous_categories:
+            hints.append(
+                "Category mention "
+                f"'{category_fragment}' is ambiguous across: {', '.join(ambiguous_categories)}."
+            )
+            should_fuzzy_retry = True
+
+    subcategory_fragment = _extract_first_fragment(question, _SUBCATEGORY_FRAGMENT_PATTERNS)
+    if subcategory_fragment:
+        resolved_subcategory, ambiguous_subcategories = _resolve_alias(
+            subcategory_fragment,
+            subcategories,
+            min_score=0.55,
+        )
+        if resolved_subcategory:
+            hints.append(
+                f"Subcategory mention '{subcategory_fragment}' maps to '{resolved_subcategory}'."
+            )
+            should_fuzzy_retry = True
+        elif ambiguous_subcategories:
+            hints.append(
+                "Subcategory mention "
+                f"'{subcategory_fragment}' is ambiguous across: {', '.join(ambiguous_subcategories)}."
+            )
+            should_fuzzy_retry = True
+
+    description_phrase = _extract_description_phrase(question)
+    if description_phrase:
+        hints.append(
+            "Description text filter detected: "
+            f"'{description_phrase}'. Search across description and merchant_or_item."
+        )
+        should_fuzzy_retry = True
+
+    return hints, should_fuzzy_retry
+
+
+def _augment_question_with_context(
+    question: str,
+    *,
+    hints: list[str],
+    fuzzy_mode: bool,
+) -> str:
+    clean_question = question.strip()
+    if not hints and not fuzzy_mode:
+        return clean_question
+
+    sections = [clean_question]
+    if hints:
+        hint_lines = "\n".join(f"- {hint}" for hint in hints)
+        sections.append(f"Resolved context hints:\n{hint_lines}")
+    if fuzzy_mode:
+        sections.append(
+            "Fallback mode for recall: if strict filters return no rows, relax filters with "
+            "LOWER(CAST(column AS TEXT)) LIKE '%term%' for logged_by, category, and subcategory. "
+            "For free-text matching, search LOWER(COALESCE(description,'') || ' ' || COALESCE(merchant_or_item,'')) "
+            "with LIKE."
+        )
+    return "\n\n".join(sections)
+
+
+def _reindex_attempts(attempts: list[SQLAgentAttempt], *, start: int = 0) -> list[SQLAgentAttempt]:
+    reindexed: list[SQLAgentAttempt] = []
+    for offset, attempt in enumerate(attempts, start=1):
+        reindexed.append(
+            SQLAgentAttempt(
+                attempt_number=start + offset,
+                generated_sql=attempt.generated_sql,
+                llm_reason=attempt.llm_reason,
+                validation_ok=attempt.validation_ok,
+                validation_reason=attempt.validation_reason,
+                execution_ok=attempt.execution_ok,
+                db_error=attempt.db_error,
+            )
+        )
+    return reindexed
+
+
+def _merge_agent_results(primary: SQLAgentResult, fallback: SQLAgentResult) -> SQLAgentResult:
+    use_fallback = (
+        (fallback.success and len(fallback.rows) > 0)
+        or (not primary.success and fallback.success)
+    )
+    chosen = fallback if use_fallback else primary
+    merged_attempts = _reindex_attempts(primary.attempts)
+    merged_attempts.extend(_reindex_attempts(fallback.attempts, start=len(merged_attempts)))
+    merged_trace = [*primary.tool_trace, "langgraph_fuzzy_retry", *fallback.tool_trace]
+    return SQLAgentResult(
+        success=chosen.success,
+        final_sql=chosen.final_sql,
+        answer=chosen.answer,
+        attempts=merged_attempts or chosen.attempts,
+        columns=chosen.columns,
+        rows=chosen.rows,
+        tool_trace=merged_trace,
+        failure_reason=chosen.failure_reason,
+    )
+
+
+async def _graph_resolve_context(state: _AnalysisGraphState) -> _AnalysisGraphState:
+    question = str(state.get("question") or "").strip()
+    session = state.get("session")
+    household_id = state.get("household_id")
+    if not question or session is None or household_id is None:
+        return {
+            "context_hints": _EMPTY_HINTS,
+            "should_fuzzy_retry": False,
+            "resolved_question": question,
+            "fallback_question": question,
+        }
+    hints, should_retry = await _resolve_question_context(
+        question=question,
+        session=session,
+        household_id=household_id,
+    )
+    return {
+        "context_hints": hints,
+        "should_fuzzy_retry": should_retry,
+        "resolved_question": _augment_question_with_context(
+            question,
+            hints=hints,
+            fuzzy_mode=False,
+        ),
+        "fallback_question": _augment_question_with_context(
+            question,
+            hints=hints,
+            fuzzy_mode=True,
+        ),
+    }
+
+
+async def _graph_run_primary(state: _AnalysisGraphState) -> _AnalysisGraphState:
+    runtime = state.get("runtime")
+    execute_sql = state.get("execute_sql")
+    question = str(state.get("resolved_question") or state.get("question") or "").strip()
+    if runtime is None or execute_sql is None:
+        raise RuntimeError("LangGraph state is missing runtime or execute_sql.")
+    primary_result = await _run_sql_agent_with_executor(
+        runtime=runtime,
+        question=question,
+        execute_sql=execute_sql,
+    )
+    return {"primary_result": primary_result}
+
+
+def _graph_should_retry(state: _AnalysisGraphState) -> str:
+    primary = state.get("primary_result")
+    if primary is None:
+        return "use_primary"
+    if primary.success and len(primary.rows) > 0:
+        return "use_primary"
+    if not bool(state.get("should_fuzzy_retry")):
+        return "use_primary"
+    resolved_question = str(state.get("resolved_question") or "").strip()
+    fallback_question = str(state.get("fallback_question") or "").strip()
+    if not fallback_question or fallback_question == resolved_question:
+        return "use_primary"
+    return "retry_with_fuzzy"
+
+
+def _graph_finalize_primary(state: _AnalysisGraphState) -> _AnalysisGraphState:
+    primary = state.get("primary_result")
+    if primary is None:
+        raise RuntimeError("Primary result missing in LangGraph finalize node.")
+    return {"final_result": primary}
+
+
+async def _graph_run_fallback(state: _AnalysisGraphState) -> _AnalysisGraphState:
+    runtime = state.get("runtime")
+    execute_sql = state.get("execute_sql")
+    fallback_question = str(state.get("fallback_question") or "").strip()
+    primary = state.get("primary_result")
+    if runtime is None or execute_sql is None or primary is None:
+        raise RuntimeError("LangGraph fallback state is incomplete.")
+    fallback_result = await _run_sql_agent_with_executor(
+        runtime=runtime,
+        question=fallback_question,
+        execute_sql=execute_sql,
+    )
+    return {"final_result": _merge_agent_results(primary, fallback_result)}
+
+
+def _build_analysis_graph() -> StateGraph:
+    builder = StateGraph(_AnalysisGraphState)
+    builder.add_node("resolve_context", _graph_resolve_context)
+    builder.add_node("run_primary", _graph_run_primary)
+    builder.add_node("finalize_primary", _graph_finalize_primary)
+    builder.add_node("run_fallback", _graph_run_fallback)
+    builder.add_edge(START, "resolve_context")
+    builder.add_edge("resolve_context", "run_primary")
+    builder.add_conditional_edges(
+        "run_primary",
+        _graph_should_retry,
+        {
+            "use_primary": "finalize_primary",
+            "retry_with_fuzzy": "run_fallback",
+        },
+    )
+    builder.add_edge("finalize_primary", END)
+    builder.add_edge("run_fallback", END)
+    return builder.compile()
+
+
+ANALYSIS_LANGGRAPH = _build_analysis_graph()
+
+
+async def _run_sql_agent_langgraph_with_executor(
+    *,
+    runtime: LLMRuntimeConfig,
+    question: str,
+    household_id: UUID,
+    session: AsyncSession,
+    execute_sql: SQLExecutor,
+) -> SQLAgentResult:
+    graph_state = await ANALYSIS_LANGGRAPH.ainvoke(
+        {
+            "question": question,
+            "runtime": runtime,
+            "execute_sql": execute_sql,
+            "household_id": household_id,
+            "session": session,
+        }
+    )
+    result = graph_state.get("final_result") or graph_state.get("primary_result")
+    if result is None:
+        raise RuntimeError("LangGraph analysis pipeline returned no result.")
+    return result
+
+
 async def _run_sql_agent(
     *,
     runtime: LLMRuntimeConfig,
@@ -335,9 +765,11 @@ async def _run_sql_agent(
 ) -> SQLAgentResult:
     async def execute_sql(sql_query: str) -> tuple[list[str], list[list[str | float | int]]]:
         return await _run_sql(session, household_id, sql_query)
-    return await _run_sql_agent_with_executor(
+    return await _run_sql_agent_langgraph_with_executor(
         runtime=runtime,
         question=question,
+        household_id=household_id,
+        session=session,
         execute_sql=execute_sql,
     )
 
@@ -625,9 +1057,11 @@ async def ask_analysis_e2e_postgres(
         )
 
     try:
-        agent_result = await _run_sql_agent_with_executor(
+        agent_result = await _run_sql_agent_langgraph_with_executor(
             runtime=runtime,
             question=question,
+            household_id=user.household_id,
+            session=session,
             execute_sql=execute_external,
         )
     except Exception as exc:

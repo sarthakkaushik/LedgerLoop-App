@@ -29,6 +29,9 @@ You are a SQL generator for PostgreSQL.
 - Refer to people using names from `logged_by`.
 - Support taxonomy-aware analysis across `category` and `subcategory`.
 - Handle missing subcategory values with `IS NULL` / `COALESCE` where helpful.
+- Users may mention only first names (for example "pooja"), so resolve person filters on `logged_by`
+  with case-insensitive partial matching when exact full names are unknown.
+- For free-text expense lookups, search both `description` and `merchant_or_item` together.
 
 ## Database schema (JSON)
 {PROMPT_SCHEMA_JSON_TEXT}
@@ -48,6 +51,10 @@ You are a SQL generator for PostgreSQL.
 - Currency is INR unless the user asks otherwise.
 - When the question is about subcategories, group/filter on both `category` and `subcategory`.
 - For uncategorized subcategory requests, use `subcategory IS NULL`.
+- For person-name filters, prefer exact names when available, otherwise use:
+  LOWER(logged_by) LIKE '%name_fragment%'.
+- For description/item filters, use:
+  LOWER(COALESCE(description,'') || ' ' || COALESCE(merchant_or_item,'')) LIKE '%text%'.
 """
 
 
@@ -63,6 +70,7 @@ Rules:
 - Only SELECT (or WITH + SELECT), no semicolon.
 - No write/schema operations.
 - Use LOWER(CAST(column AS TEXT)) for case-insensitive enum/text comparisons if needed.
+- For name fragments and free-text lookups, use safe partial matching with LIKE.
 """
 
 
