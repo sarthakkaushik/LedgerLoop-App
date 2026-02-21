@@ -3718,6 +3718,19 @@ function SettingsPanel({ token, user, onUserUpdated }) {
   );
 }
 
+const INSIGHTS_CATEGORY_COLORS = [
+  "#ff6b35",
+  "#4ecdc4",
+  "#a78bfa",
+  "#f7c59f",
+  "#ffd166",
+  "#56cfe1",
+  "#72efdd",
+  "#c77dff",
+];
+
+const INSIGHTS_PERSON_COLORS = ["#ff6b35", "#4ecdc4", "#a78bfa", "#f7c59f"];
+
 function DashboardPanel({ token, embedded = false }) {
   const [monthsBack, setMonthsBack] = useState(6);
   const [dashboard, setDashboard] = useState(null);
@@ -3788,11 +3801,6 @@ function DashboardPanel({ token, embedded = false }) {
     setExpandedCategoryKey("");
   }, [monthsBack, dashboard?.period_month]);
 
-  const maxMonthlyTotal = useMemo(() => {
-    if (!dashboard?.monthly_trend?.length) return 1;
-    return Math.max(...dashboard.monthly_trend.map((item) => item.total), 1);
-  }, [dashboard]);
-
   const maxCategoryTotal = useMemo(() => {
     if (!dashboard?.category_split?.length) return 1;
     return Math.max(...dashboard.category_split.map((item) => item.total), 1);
@@ -3857,15 +3865,112 @@ function DashboardPanel({ token, embedded = false }) {
     return (recurringSpend / totalSpend) * 100;
   }, [dashboard?.total_spend, recurringSpend]);
 
-  const dailyBurnPoints = useMemo(() => {
-    const points = Array.isArray(dashboard?.daily_burn) ? dashboard.daily_burn : [];
-    return points.length > 14 ? points.slice(points.length - 14) : points;
-  }, [dashboard?.daily_burn]);
+  const dailySpendSeries = useMemo(() => {
+    const totalsByDay = new Map();
+    for (const expense of periodFeedItems) {
+      const day = String(expense?.date_incurred || "").trim();
+      const amount = parseNumeric(expense?.amount);
+      if (!day || amount === null) continue;
+      totalsByDay.set(day, (totalsByDay.get(day) || 0) + amount);
+    }
+    return Array.from(totalsByDay.entries())
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([day, total]) => ({ day, total: Number(total.toFixed(2)) }));
+  }, [periodFeedItems]);
 
-  const maxDailyBurnTotal = useMemo(() => {
-    if (!dailyBurnPoints.length) return 1;
-    return Math.max(...dailyBurnPoints.map((item) => item.total), 1);
-  }, [dailyBurnPoints]);
+  const maxDailySpendTotal = useMemo(() => {
+    if (!dailySpendSeries.length) return 1;
+    return Math.max(...dailySpendSeries.map((item) => item.total), 1);
+  }, [dailySpendSeries]);
+
+  const dailyChartModel = useMemo(() => {
+    if (!dailySpendSeries.length) return null;
+    const width = 980;
+    const height = 320;
+    const padding = { top: 16, right: 18, bottom: 44, left: 68 };
+    const innerWidth = width - padding.left - padding.right;
+    const innerHeight = height - padding.top - padding.bottom;
+    const xStep = dailySpendSeries.length > 1 ? innerWidth / (dailySpendSeries.length - 1) : 0;
+    const maxY = Math.max(maxDailySpendTotal, 1);
+
+    const points = dailySpendSeries.map((item, index) => {
+      const x = padding.left + xStep * index;
+      const y = padding.top + innerHeight - (item.total / maxY) * innerHeight;
+      return { ...item, index, x, y };
+    });
+
+    const linePath = points
+      .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+      .join(" ");
+    const baselineY = padding.top + innerHeight;
+    const areaPath = `${linePath} L ${points[points.length - 1].x.toFixed(2)} ${baselineY.toFixed(2)} L ${points[0].x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
+
+    const yTicks = Array.from({ length: 5 }, (_, index) => {
+      const ratio = index / 4;
+      const value = maxY * (1 - ratio);
+      const y = padding.top + innerHeight * ratio;
+      return { value, y };
+    });
+
+    const maxTickCount = 6;
+    const interval = Math.max(Math.ceil(points.length / maxTickCount), 1);
+    const xTicks = points.filter(
+      (point) =>
+        point.index === 0 ||
+        point.index === points.length - 1 ||
+        point.index % interval === 0
+    );
+
+    return {
+      width,
+      height,
+      padding,
+      points,
+      yTicks,
+      xTicks,
+      linePath,
+      areaPath,
+      baselineY,
+    };
+  }, [dailySpendSeries, maxDailySpendTotal]);
+
+  const personAxisTicks = useMemo(() => {
+    return Array.from({ length: 5 }, (_, index) => {
+      const ratio = index / 4;
+      const value = maxUserTotal * (1 - ratio);
+      return { ratio, value };
+    });
+  }, [maxUserTotal]);
+
+  const categoryPie = useMemo(() => {
+    const split = Array.isArray(dashboard?.category_split) ? dashboard.category_split : [];
+    const total = split.reduce((sum, item) => sum + Number(item?.total || 0), 0);
+    if (!split.length || total <= 0) {
+      return { total: 0, gradient: "", segments: [] };
+    }
+
+    let cursor = 0;
+    const segments = split.map((item, index) => {
+      const value = Number(item?.total || 0);
+      const share = total > 0 ? value / total : 0;
+      const start = cursor * 100;
+      cursor += share;
+      const end = Math.max(cursor * 100, start + 0.18);
+      return {
+        category: String(item?.category || "Other").trim() || "Other",
+        total: value,
+        percentage: share * 100,
+        color: INSIGHTS_CATEGORY_COLORS[index % INSIGHTS_CATEGORY_COLORS.length],
+        start,
+        end,
+      };
+    });
+
+    const gradient = `conic-gradient(${segments
+      .map((segment) => `${segment.color} ${segment.start.toFixed(2)}% ${segment.end.toFixed(2)}%`)
+      .join(", ")})`;
+    return { total, gradient, segments };
+  }, [dashboard?.category_split]);
 
   const periodSubtitle = useMemo(() => {
     if (!periodStart || !periodEnd) return "Current month overview";
@@ -3948,172 +4053,259 @@ function DashboardPanel({ token, embedded = false }) {
           </div>
 
           <div className="result-grid dashboard-grid insights-dashboard-grid">
-            <article className="result-card insights-result-card">
-              <h3>Monthly Trend</h3>
-              {dashboard.monthly_trend.length === 0 ? (
-                <p>No trend data yet.</p>
-              ) : (
-                <div className="bar-list insights-bar-list">
-                  {dashboard.monthly_trend.map((item) => (
-                    <div className="bar-row insights-bar-row" key={item.month}>
-                      <span>{formatMonthYearValue(item.month, { monthStyle: "short", separator: "-" })}</span>
-                      <div className="bar-track">
-                        <div
-                          className="bar-fill"
-                          style={{
-                            width: `${Math.max((item.total / maxMonthlyTotal) * 100, 2)}%`,
-                          }}
+            <div className="insights-layout-main">
+              <article className="result-card insights-result-card insights-card-daily">
+                <h3>Daily Spending Over Time</h3>
+                {dailyChartModel === null ? (
+                  <p>No daily spend data this month.</p>
+                ) : (
+                  <div className="insights-line-chart-wrap">
+                    <svg
+                      className="insights-line-chart"
+                      viewBox={`0 0 ${dailyChartModel.width} ${dailyChartModel.height}`}
+                      role="img"
+                      aria-label="Daily spending line chart"
+                    >
+                      <defs>
+                        <linearGradient id="insightsAreaFill" x1="0%" y1="0%" x2="0%" y2="100%">
+                          <stop offset="0%" stopColor="rgba(255,107,53,0.38)" />
+                          <stop offset="100%" stopColor="rgba(255,107,53,0.06)" />
+                        </linearGradient>
+                      </defs>
+
+                      {dailyChartModel.yTicks.map((tick, index) => (
+                        <line
+                          key={`line-grid-${index}`}
+                          x1={dailyChartModel.padding.left}
+                          x2={dailyChartModel.width - dailyChartModel.padding.right}
+                          y1={tick.y}
+                          y2={tick.y}
+                          className="insights-line-grid-line"
                         />
-                      </div>
-                      <strong>{formatCurrencyValue(item.total, dashboardCurrency)}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
+                      ))}
 
-            <article className="result-card insights-result-card insights-card-wide">
-              <h3>Daily Spending Over Time</h3>
-              {dailyBurnPoints.length === 0 ? (
-                <p>No daily spend data this month.</p>
-              ) : (
-                <div className="bar-list insights-bar-list">
-                  {dailyBurnPoints.map((point) => (
-                    <div className="bar-row insights-bar-row" key={point.day}>
-                      <span>{formatDateValue(point.day)}</span>
-                      <div className="bar-track">
-                        <div
-                          className="bar-fill accent"
-                          style={{
-                            width: `${Math.max((point.total / maxDailyBurnTotal) * 100, 2)}%`,
-                          }}
+                      <path d={dailyChartModel.areaPath} className="insights-line-area-path" />
+                      <path d={dailyChartModel.linePath} className="insights-line-path" />
+
+                      {dailyChartModel.points.map((point) => (
+                        <circle
+                          key={point.day}
+                          cx={point.x}
+                          cy={point.y}
+                          r={5}
+                          className="insights-line-point"
                         />
-                      </div>
-                      <strong>{formatCurrencyValue(point.total, dashboardCurrency)}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
+                      ))}
 
-            <article className="result-card insights-result-card">
-              <h3>Spending by Person</h3>
-              {dashboard.user_split.length === 0 ? (
-                <p>No user data yet.</p>
-              ) : (
-                <div className="bar-list insights-bar-list">
-                  {dashboard.user_split.map((item) => (
-                    <div className="bar-row insights-bar-row" key={item.user_id}>
-                      <span>{item.user_name}</span>
-                      <div className="bar-track">
-                        <div
-                          className="bar-fill dark"
-                          style={{
-                            width: `${Math.max((item.total / maxUserTotal) * 100, 2)}%`,
-                          }}
-                        />
-                      </div>
-                      <strong>{formatCurrencyValue(item.total, dashboardCurrency)}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            <article className="result-card insights-result-card insights-card-category">
-              <h3>Spending by Category</h3>
-              {dashboard.category_split.length === 0 ? (
-                <p>No confirmed expenses this month.</p>
-              ) : (
-                <div className="category-split-list insights-category-list">
-                  {dashboard.category_split.map((item, index) => {
-                    const categoryLabel = String(item.category || "Other").trim() || "Other";
-                    const categoryKey = normalizeTaxonomyName(categoryLabel);
-                    const isExpanded = expandedCategoryKey === categoryKey;
-                    const categoryEntries = categoryEntriesByKey.get(categoryKey) || [];
-                    const panelId = `category-detail-${index}`;
-                    const hiddenEntriesCount = Math.max(item.count - categoryEntries.length, 0);
-
-                    return (
-                      <article
-                        key={`${categoryLabel}-${index}`}
-                        className={
-                          isExpanded
-                            ? "category-split-item insights-category-item expanded"
-                            : "category-split-item insights-category-item"
-                        }
-                      >
-                        <button
-                          type="button"
-                          className="bar-row insights-bar-row category-bar-button insights-category-toggle"
-                          aria-expanded={isExpanded}
-                          aria-controls={panelId}
-                          onClick={() => handleToggleCategory(categoryLabel)}
+                      {dailyChartModel.yTicks.map((tick, index) => (
+                        <text
+                          key={`line-y-${index}`}
+                          x={8}
+                          y={tick.y + 4}
+                          className="insights-line-axis-label"
                         >
-                          <span>{categoryLabel}</span>
-                          <div className="bar-track">
-                            <div
-                              className="bar-fill accent"
-                              style={{
-                                width: `${Math.max((item.total / maxCategoryTotal) * 100, 2)}%`,
-                              }}
-                            />
-                          </div>
-                          <div className="category-bar-tail">
-                            <strong>{formatCurrencyValue(item.total, dashboardCurrency)}</strong>
-                            <span className="category-chevron" aria-hidden="true">
-                              v
-                            </span>
-                          </div>
-                        </button>
-                        {isExpanded && (
-                          <div id={panelId} className="category-expense-panel">
-                            {categoryFeedLoading ? (
-                              <p className="category-expense-empty">Loading entries...</p>
-                            ) : categoryFeedError ? (
-                              <p className="category-expense-empty">{categoryFeedError}</p>
-                            ) : categoryEntries.length === 0 ? (
-                              <p className="category-expense-empty">
-                                No entries found in this month for this category.
-                              </p>
-                            ) : (
-                              <>
-                                <ul className="category-expense-list">
-                                  {categoryEntries.map((expense) => (
-                                    <li className="category-expense-item" key={expense.id}>
-                                      <div>
-                                        <p className="category-expense-title">
-                                          {expense.description ||
-                                            expense.merchant_or_item ||
-                                            "Expense entry"}
-                                        </p>
-                                        <p className="category-expense-meta">
-                                          {formatDateValue(expense.date_incurred)}
-                                          {expense.subcategory ? ` | ${expense.subcategory}` : ""}
-                                          {expense.logged_by_name ? ` | ${expense.logged_by_name}` : ""}
-                                        </p>
-                                      </div>
-                                      <strong className="category-expense-amount">
-                                        {formatCurrencyValue(expense.amount, expense.currency)}
-                                      </strong>
-                                    </li>
-                                  ))}
-                                </ul>
-                                {hiddenEntriesCount > 0 && (
-                                  <p className="category-expense-footnote">
-                                    Showing {categoryEntries.length} of {item.count} entries for this category.
-                                  </p>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        )}
-                      </article>
-                    );
-                  })}
-                </div>
-              )}
-            </article>
+                          {formatCompactCurrencyValue(tick.value, dashboardCurrency)}
+                        </text>
+                      ))}
+
+                      {dailyChartModel.xTicks.map((point) => (
+                        <text
+                          key={`line-x-${point.day}`}
+                          x={point.x}
+                          y={dailyChartModel.height - 10}
+                          textAnchor="middle"
+                          className="insights-line-axis-label"
+                        >
+                          {String(point.day).slice(5)}
+                        </text>
+                      ))}
+                    </svg>
+                  </div>
+                )}
+              </article>
+
+              <article className="result-card insights-result-card insights-card-person">
+                <h3>Spending by Person</h3>
+                {dashboard.user_split.length === 0 ? (
+                  <p>No user data yet.</p>
+                ) : (
+                  <div className="insights-person-chart">
+                    <div className="insights-person-y-axis">
+                      {personAxisTicks.map((tick, index) => (
+                        <span
+                          key={`person-axis-${index}`}
+                          style={{ bottom: `calc(${(1 - tick.ratio) * 100}% - 9px)` }}
+                        >
+                          {formatCompactCurrencyValue(tick.value, dashboardCurrency)}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="insights-person-plot">
+                      {personAxisTicks.map((tick, index) => (
+                        <span
+                          key={`person-grid-${index}`}
+                          className="insights-person-grid-line"
+                          style={{ bottom: `${(1 - tick.ratio) * 100}%` }}
+                          aria-hidden="true"
+                        />
+                      ))}
+
+                      <div className="insights-person-bars">
+                        {dashboard.user_split.map((item, index) => (
+                          <article className="insights-person-bar" key={item.user_id}>
+                            <div className="insights-person-bar-track">
+                              <div
+                                className="insights-person-bar-fill"
+                                style={{
+                                  height: `${Math.max((item.total / maxUserTotal) * 100, 4)}%`,
+                                  background: INSIGHTS_PERSON_COLORS[index % INSIGHTS_PERSON_COLORS.length],
+                                }}
+                              />
+                            </div>
+                            <p className="insights-person-bar-name">{item.user_name}</p>
+                            <p className="insights-person-bar-value">
+                              {formatCompactCurrencyValue(item.total, dashboardCurrency)}
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </article>
+            </div>
+
+            <div className="insights-category-grid">
+              <article className="result-card insights-result-card insights-pie-card">
+                <h3>Spending by Category</h3>
+                {categoryPie.segments.length === 0 ? (
+                  <p>No confirmed expenses this month.</p>
+                ) : (
+                  <>
+                    <div className="insights-pie-shell">
+                      <div className="insights-pie-chart" style={{ background: categoryPie.gradient }}>
+                        <div className="insights-pie-hole">
+                          <span>Total</span>
+                          <strong>{formatCompactCurrencyValue(categoryPie.total, dashboardCurrency)}</strong>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="insights-pie-legend">
+                      {categoryPie.segments.map((segment) => (
+                        <div className="insights-pie-legend-item" key={segment.category}>
+                          <span
+                            className="insights-pie-legend-dot"
+                            style={{ backgroundColor: segment.color }}
+                            aria-hidden="true"
+                          />
+                          <span className="insights-pie-legend-name">{segment.category}</span>
+                          <span className="insights-pie-legend-share">
+                            {segment.percentage.toFixed(1)}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </article>
+
+              <article className="result-card insights-result-card insights-card-category">
+                <h3>Category Split</h3>
+                {dashboard.category_split.length === 0 ? (
+                  <p>No confirmed expenses this month.</p>
+                ) : (
+                  <div className="category-split-list insights-category-list">
+                    {dashboard.category_split.map((item, index) => {
+                      const categoryLabel = String(item.category || "Other").trim() || "Other";
+                      const categoryKey = normalizeTaxonomyName(categoryLabel);
+                      const isExpanded = expandedCategoryKey === categoryKey;
+                      const categoryEntries = categoryEntriesByKey.get(categoryKey) || [];
+                      const panelId = `category-detail-${index}`;
+                      const hiddenEntriesCount = Math.max(item.count - categoryEntries.length, 0);
+
+                      return (
+                        <article
+                          key={`${categoryLabel}-${index}`}
+                          className={
+                            isExpanded
+                              ? "category-split-item insights-category-item expanded"
+                              : "category-split-item insights-category-item"
+                          }
+                        >
+                          <button
+                            type="button"
+                            className="bar-row insights-bar-row category-bar-button insights-category-toggle"
+                            aria-expanded={isExpanded}
+                            aria-controls={panelId}
+                            onClick={() => handleToggleCategory(categoryLabel)}
+                          >
+                            <span>{categoryLabel}</span>
+                            <div className="bar-track">
+                              <div
+                                className="bar-fill accent"
+                                style={{
+                                  width: `${Math.max((item.total / maxCategoryTotal) * 100, 2)}%`,
+                                }}
+                              />
+                            </div>
+                            <div className="category-bar-tail">
+                              <strong>{formatCurrencyValue(item.total, dashboardCurrency)}</strong>
+                              <span className="category-chevron" aria-hidden="true">
+                                v
+                              </span>
+                            </div>
+                          </button>
+                          {isExpanded && (
+                            <div id={panelId} className="category-expense-panel">
+                              {categoryFeedLoading ? (
+                                <p className="category-expense-empty">Loading entries...</p>
+                              ) : categoryFeedError ? (
+                                <p className="category-expense-empty">{categoryFeedError}</p>
+                              ) : categoryEntries.length === 0 ? (
+                                <p className="category-expense-empty">
+                                  No entries found in this month for this category.
+                                </p>
+                              ) : (
+                                <>
+                                  <ul className="category-expense-list">
+                                    {categoryEntries.map((expense) => (
+                                      <li className="category-expense-item" key={expense.id}>
+                                        <div>
+                                          <p className="category-expense-title">
+                                            {expense.description ||
+                                              expense.merchant_or_item ||
+                                              "Expense entry"}
+                                          </p>
+                                          <p className="category-expense-meta">
+                                            {formatDateValue(expense.date_incurred)}
+                                            {expense.subcategory ? ` | ${expense.subcategory}` : ""}
+                                            {expense.logged_by_name ? ` | ${expense.logged_by_name}` : ""}
+                                          </p>
+                                        </div>
+                                        <strong className="category-expense-amount">
+                                          {formatCurrencyValue(expense.amount, expense.currency)}
+                                        </strong>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  {hiddenEntriesCount > 0 && (
+                                    <p className="category-expense-footnote">
+                                      Showing {categoryEntries.length} of {item.count} entries for this category.
+                                    </p>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </article>
+            </div>
           </div>
         </>
       )}
@@ -4217,6 +4409,22 @@ function formatMonthYearValue(value, { monthStyle = "long", separator = " " } = 
     return `${monthPart}${separator}${yearPart}`;
   } catch {
     return value;
+  }
+}
+
+function formatCompactCurrencyValue(value, currencyCode = "INR") {
+  const numeric = parseNumeric(value);
+  if (numeric === null) return value;
+  const normalized = String(currencyCode || "INR").toUpperCase();
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: normalized,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(numeric);
+  } catch {
+    return `${Math.round(numeric).toLocaleString()} ${normalized}`;
   }
 }
 
@@ -4496,14 +4704,6 @@ function InsightsPanel({ token }) {
 
   return (
     <section className="panel insights-panel-shell">
-      <div className="insights-panel-header">
-        <p className="kicker insights-panel-kicker">Insights Studio</p>
-        <h2>Expense Dashboard</h2>
-        <p className="hint insights-panel-subtitle">
-          Dashboard styling inspired by your reference with SQL-agent AI enabled.
-        </p>
-      </div>
-
       <div className="panel-action-row insights-action-row">
         <div className="insights-switch" role="tablist" aria-label="Insights Sections">
           <button
@@ -4550,6 +4750,9 @@ export default function App() {
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [capturePrefillText, setCapturePrefillText] = useState("");
   const [globalNotice, setGlobalNotice] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => safeStorageGet("expense_workspace_sidebar_collapsed") === "1"
+  );
 
   useEffect(() => {
     if (auth?.token) {
@@ -4619,6 +4822,10 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [globalNotice]);
 
+  useEffect(() => {
+    safeStorageSet("expense_workspace_sidebar_collapsed", sidebarCollapsed ? "1" : "0");
+  }, [sidebarCollapsed]);
+
   const tabLabel = useMemo(() => {
     if (activeTab === "settings") return "Settings";
     return tabs.find((tab) => tab.id === activeTab)?.label ?? "Add Expense";
@@ -4662,8 +4869,21 @@ export default function App() {
             setGlobalNotice("");
           }}
         />
-        <section className="workspace">
+        <section className={sidebarCollapsed ? "workspace sidebar-collapsed" : "workspace"}>
           <aside className="side-tabs">
+            <button
+              type="button"
+              className="sidebar-toggle"
+              onClick={() => setSidebarCollapsed((previous) => !previous)}
+              aria-label={sidebarCollapsed ? "Expand workspace sidebar" : "Collapse workspace sidebar"}
+            >
+              <span className={sidebarCollapsed ? "sidebar-toggle-icon collapsed" : "sidebar-toggle-icon"} aria-hidden="true">
+                {"<"}
+              </span>
+              <span className="sidebar-toggle-label">
+                {sidebarCollapsed ? "Expand" : "Collapse"}
+              </span>
+            </button>
             <p className="kicker">Workspace</p>
             {tabs.map((tab) => (
               <button
@@ -4671,6 +4891,7 @@ export default function App() {
                 key={tab.id}
                 className={activeTab === tab.id ? "tab active" : "tab"}
                 onClick={() => setActiveTab(tab.id)}
+                title={tab.label}
               >
                 <span className="tab-icon" aria-hidden="true">
                   <TabIcon tabId={tab.id} />
