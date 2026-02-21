@@ -507,7 +507,7 @@ class RuntimeErrorBoundary extends Component {
       return this.props.children;
     }
     return (
-      <main className="app-shell">
+      <main className="app-shell app-shell-unified">
         <section className="panel">
           <h2>Something went wrong</h2>
           <p className="hint">
@@ -3803,20 +3803,78 @@ function DashboardPanel({ token, embedded = false }) {
     return Math.max(...dashboard.user_split.map((item) => item.total), 1);
   }, [dashboard]);
 
+  const periodStart = String(dashboard?.period_start || "").trim();
+  const periodEnd = String(dashboard?.period_end || "").trim();
+
+  const periodFeedItems = useMemo(() => {
+    if (!periodStart || !periodEnd) return [];
+    const items = Array.isArray(categoryFeed?.items) ? categoryFeed.items : [];
+    return items.filter((expense) => {
+      const dateIncurred = String(expense?.date_incurred || "").trim();
+      return Boolean(dateIncurred && dateIncurred >= periodStart && dateIncurred <= periodEnd);
+    });
+  }, [categoryFeed?.items, periodEnd, periodStart]);
+
+  const dashboardCurrency = useMemo(() => {
+    const itemWithCurrency = periodFeedItems.find((item) => String(item?.currency || "").trim());
+    return String(itemWithCurrency?.currency || "INR").toUpperCase();
+  }, [periodFeedItems]);
+
+  const periodDayCount = useMemo(() => {
+    if (!periodStart || !periodEnd) return 0;
+    const startDate = new Date(`${periodStart}T00:00:00`);
+    const endDate = new Date(`${periodEnd}T00:00:00`);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 0;
+    const diffMs = Math.max(endDate.getTime() - startDate.getTime(), 0);
+    return Math.floor(diffMs / 86400000) + 1;
+  }, [periodEnd, periodStart]);
+
+  const averagePerDay = useMemo(() => {
+    if (!dashboard || periodDayCount <= 0) return 0;
+    return Number(dashboard.total_spend || 0) / periodDayCount;
+  }, [dashboard, periodDayCount]);
+
+  const topCategory = useMemo(() => {
+    if (!dashboard?.category_split?.length) {
+      return { category: "No category", total: 0 };
+    }
+    return dashboard.category_split[0];
+  }, [dashboard?.category_split]);
+
+  const recurringSpend = useMemo(
+    () =>
+      periodFeedItems.reduce((sum, expense) => {
+        const amount = parseNumeric(expense?.amount);
+        if (!expense?.is_recurring || amount === null) return sum;
+        return sum + amount;
+      }, 0),
+    [periodFeedItems]
+  );
+
+  const recurringShare = useMemo(() => {
+    const totalSpend = Number(dashboard?.total_spend || 0);
+    if (totalSpend <= 0) return 0;
+    return (recurringSpend / totalSpend) * 100;
+  }, [dashboard?.total_spend, recurringSpend]);
+
+  const dailyBurnPoints = useMemo(() => {
+    const points = Array.isArray(dashboard?.daily_burn) ? dashboard.daily_burn : [];
+    return points.length > 14 ? points.slice(points.length - 14) : points;
+  }, [dashboard?.daily_burn]);
+
+  const maxDailyBurnTotal = useMemo(() => {
+    if (!dailyBurnPoints.length) return 1;
+    return Math.max(...dailyBurnPoints.map((item) => item.total), 1);
+  }, [dailyBurnPoints]);
+
+  const periodSubtitle = useMemo(() => {
+    if (!periodStart || !periodEnd) return "Current month overview";
+    return `${formatDateValue(periodStart)} - ${formatDateValue(periodEnd)}`;
+  }, [periodEnd, periodStart]);
+
   const categoryEntriesByKey = useMemo(() => {
     const grouped = new Map();
-    const periodStart = String(dashboard?.period_start || "").trim();
-    const periodEnd = String(dashboard?.period_end || "").trim();
-    if (!periodStart || !periodEnd) {
-      return grouped;
-    }
-
-    const items = Array.isArray(categoryFeed?.items) ? categoryFeed.items : [];
-    for (const expense of items) {
-      const dateIncurred = String(expense?.date_incurred || "").trim();
-      if (!dateIncurred || dateIncurred < periodStart || dateIncurred > periodEnd) {
-        continue;
-      }
+    for (const expense of periodFeedItems) {
       const categoryLabel = String(expense?.category || "Other").trim() || "Other";
       const key = normalizeTaxonomyName(categoryLabel);
       if (!key) continue;
@@ -3827,7 +3885,7 @@ function DashboardPanel({ token, embedded = false }) {
     }
 
     return grouped;
-  }, [categoryFeed, dashboard?.period_end, dashboard?.period_start]);
+  }, [periodFeedItems]);
 
   function handleToggleCategory(categoryName) {
     const key = normalizeTaxonomyName(categoryName || "Other");
@@ -3836,10 +3894,15 @@ function DashboardPanel({ token, embedded = false }) {
   }
 
   return (
-    <section className={embedded ? "embedded-panel" : "panel"}>
-      <div className="dashboard-header">
-        {embedded ? <h3>Spending Overview</h3> : <h2>Spending Overview</h2>}
-        <label>
+    <section className={embedded ? "embedded-panel insights-overview-panel" : "panel"}>
+      <div className="dashboard-header insights-dashboard-header">
+        <div className="insights-heading-stack">
+          {embedded ? <h3>Expense Dashboard</h3> : <h2>Expense Dashboard</h2>}
+          <p className="insights-period-line">
+            {periodSubtitle} | All amounts in {dashboardCurrency}
+          </p>
+        </div>
+        <label className="insights-window-label">
           Trend Window
           <select
             value={monthsBack}
@@ -3857,33 +3920,42 @@ function DashboardPanel({ token, embedded = false }) {
 
       {dashboard && !loading && (
         <>
-          <div className="stats-grid">
-            <article className="stat-card">
-              <p className="kicker">Current Month</p>
-              <h3>{formatMonthYearValue(dashboard.period_month, { monthStyle: "long", separator: " " })}</h3>
-              <p className="metric-value">{formatCurrencyValue(dashboard.total_spend)}</p>
+          <div className="stats-grid insights-stats-row">
+            <article className="stat-card insights-stat-card">
+              <p className="insights-stat-label">Total Spent</p>
+              <p className="insights-stat-value">
+                {formatCurrencyValue(dashboard.total_spend, dashboardCurrency)}
+              </p>
+              <p className="insights-stat-sub">{dashboard.expense_count} transactions</p>
             </article>
-            <article className="stat-card">
-              <p className="kicker">Confirmed Expenses</p>
-              <h3>{dashboard.expense_count}</h3>
-              <p className="metric-sub">entries this month</p>
+            <article className="stat-card insights-stat-card">
+              <p className="insights-stat-label">Avg / Day</p>
+              <p className="insights-stat-value">{formatCurrencyValue(averagePerDay, dashboardCurrency)}</p>
+              <p className="insights-stat-sub">over {periodDayCount || 0} days</p>
             </article>
-            <article className="stat-card">
-              <p className="kicker">Daily Burn Points</p>
-              <h3>{dashboard.daily_burn.length}</h3>
-              <p className="metric-sub">days with expenses</p>
+            <article className="stat-card insights-stat-card">
+              <p className="insights-stat-label">Top Category</p>
+              <p className="insights-stat-value is-title">{topCategory.category || "No category"}</p>
+              <p className="insights-stat-sub">
+                {formatCurrencyValue(topCategory.total || 0, dashboardCurrency)}
+              </p>
+            </article>
+            <article className="stat-card insights-stat-card">
+              <p className="insights-stat-label">Recurring</p>
+              <p className="insights-stat-value">{formatCurrencyValue(recurringSpend, dashboardCurrency)}</p>
+              <p className="insights-stat-sub">{recurringShare.toFixed(0)}% of total</p>
             </article>
           </div>
 
-          <div className="result-grid dashboard-grid">
-            <article className="result-card">
+          <div className="result-grid dashboard-grid insights-dashboard-grid">
+            <article className="result-card insights-result-card">
               <h3>Monthly Trend</h3>
               {dashboard.monthly_trend.length === 0 ? (
                 <p>No trend data yet.</p>
               ) : (
-                <div className="bar-list">
+                <div className="bar-list insights-bar-list">
                   {dashboard.monthly_trend.map((item) => (
-                    <div className="bar-row" key={item.month}>
+                    <div className="bar-row insights-bar-row" key={item.month}>
                       <span>{formatMonthYearValue(item.month, { monthStyle: "short", separator: "-" })}</span>
                       <div className="bar-track">
                         <div
@@ -3893,19 +3965,67 @@ function DashboardPanel({ token, embedded = false }) {
                           }}
                         />
                       </div>
-                      <strong>{formatCurrencyValue(item.total)}</strong>
+                      <strong>{formatCurrencyValue(item.total, dashboardCurrency)}</strong>
                     </div>
                   ))}
                 </div>
               )}
             </article>
 
-            <article className="result-card">
-              <h3>Category Split</h3>
+            <article className="result-card insights-result-card insights-card-wide">
+              <h3>Daily Spending Over Time</h3>
+              {dailyBurnPoints.length === 0 ? (
+                <p>No daily spend data this month.</p>
+              ) : (
+                <div className="bar-list insights-bar-list">
+                  {dailyBurnPoints.map((point) => (
+                    <div className="bar-row insights-bar-row" key={point.day}>
+                      <span>{formatDateValue(point.day)}</span>
+                      <div className="bar-track">
+                        <div
+                          className="bar-fill accent"
+                          style={{
+                            width: `${Math.max((point.total / maxDailyBurnTotal) * 100, 2)}%`,
+                          }}
+                        />
+                      </div>
+                      <strong>{formatCurrencyValue(point.total, dashboardCurrency)}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="result-card insights-result-card">
+              <h3>Spending by Person</h3>
+              {dashboard.user_split.length === 0 ? (
+                <p>No user data yet.</p>
+              ) : (
+                <div className="bar-list insights-bar-list">
+                  {dashboard.user_split.map((item) => (
+                    <div className="bar-row insights-bar-row" key={item.user_id}>
+                      <span>{item.user_name}</span>
+                      <div className="bar-track">
+                        <div
+                          className="bar-fill dark"
+                          style={{
+                            width: `${Math.max((item.total / maxUserTotal) * 100, 2)}%`,
+                          }}
+                        />
+                      </div>
+                      <strong>{formatCurrencyValue(item.total, dashboardCurrency)}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="result-card insights-result-card insights-card-category">
+              <h3>Spending by Category</h3>
               {dashboard.category_split.length === 0 ? (
                 <p>No confirmed expenses this month.</p>
               ) : (
-                <div className="category-split-list">
+                <div className="category-split-list insights-category-list">
                   {dashboard.category_split.map((item, index) => {
                     const categoryLabel = String(item.category || "Other").trim() || "Other";
                     const categoryKey = normalizeTaxonomyName(categoryLabel);
@@ -3917,11 +4037,15 @@ function DashboardPanel({ token, embedded = false }) {
                     return (
                       <article
                         key={`${categoryLabel}-${index}`}
-                        className={isExpanded ? "category-split-item expanded" : "category-split-item"}
+                        className={
+                          isExpanded
+                            ? "category-split-item insights-category-item expanded"
+                            : "category-split-item insights-category-item"
+                        }
                       >
                         <button
                           type="button"
-                          className="bar-row category-bar-button"
+                          className="bar-row insights-bar-row category-bar-button insights-category-toggle"
                           aria-expanded={isExpanded}
                           aria-controls={panelId}
                           onClick={() => handleToggleCategory(categoryLabel)}
@@ -3936,7 +4060,7 @@ function DashboardPanel({ token, embedded = false }) {
                             />
                           </div>
                           <div className="category-bar-tail">
-                            <strong>{formatCurrencyValue(item.total)}</strong>
+                            <strong>{formatCurrencyValue(item.total, dashboardCurrency)}</strong>
                             <span className="category-chevron" aria-hidden="true">
                               v
                             </span>
@@ -3987,30 +4111,6 @@ function DashboardPanel({ token, embedded = false }) {
                       </article>
                     );
                   })}
-                </div>
-              )}
-            </article>
-
-            <article className="result-card">
-              <h3>User Split</h3>
-              {dashboard.user_split.length === 0 ? (
-                <p>No user data yet.</p>
-              ) : (
-                <div className="bar-list">
-                  {dashboard.user_split.map((item) => (
-                    <div className="bar-row" key={item.user_id}>
-                      <span>{item.user_name}</span>
-                      <div className="bar-track">
-                        <div
-                          className="bar-fill dark"
-                          style={{
-                            width: `${Math.max((item.total / maxUserTotal) * 100, 2)}%`,
-                          }}
-                        />
-                      </div>
-                      <strong>{formatCurrencyValue(item.total)}</strong>
-                    </div>
-                  ))}
                 </div>
               )}
             </article>
@@ -4208,18 +4308,30 @@ function AnalyticsPanel({ token, embedded = false }) {
     }
   }
 
+  const toolLabel = String(result?.tool || "sql_chat_agent").replace(/_/g, " ");
+
   return (
-    <section className={embedded ? "embedded-panel" : "panel"}>
-      {embedded ? <h3>Ask AI</h3> : <h2>Ask AI</h2>}
-      <p className="hint">
-        Ask household spending questions and get chart/table-backed answers.
-      </p>
-      <div className="prompt-pills">
+    <section className={embedded ? "embedded-panel insights-ai-panel" : "panel"}>
+      <div className="insights-ai-hero">
+        <div>
+          <p className="kicker insights-ai-kicker">SQL Agent AI</p>
+          {embedded ? <h3 className="insights-ai-title">Ask AI</h3> : <h2 className="insights-ai-title">Ask AI</h2>}
+          <p className="hint insights-ai-subtitle">
+            Natural language to validated SQL for chart/table-backed answers.
+          </p>
+        </div>
+        <div className="insights-ai-hero-meta">
+          <span className="insights-agent-badge">Enabled</span>
+          {result && <p className="insights-ai-last-tool">Tool: {toolLabel}</p>}
+        </div>
+      </div>
+
+      <div className="prompt-pills insights-prompt-pills">
         {analyticsPrompts.map((prompt) => (
           <button
             type="button"
             key={prompt}
-            className="btn-ghost prompt-pill"
+            className="btn-ghost prompt-pill insights-prompt-pill"
             onClick={() => void runQuery(prompt)}
             disabled={loading || analyticsVoiceTranscribing}
           >
@@ -4227,7 +4339,8 @@ function AnalyticsPanel({ token, embedded = false }) {
           </button>
         ))}
       </div>
-      <div className="stack">
+
+      <div className="stack insights-ai-stack">
         <div className="voice-textarea-wrap">
           <textarea
             rows={4}
@@ -4241,24 +4354,24 @@ function AnalyticsPanel({ token, embedded = false }) {
         </div>
         <VoiceTranscriptionFeedback voice={analyticsVoice} />
         <button
-          className="btn-main"
+          className="btn-main insights-run-button"
           onClick={() => void runQuery()}
           disabled={loading || analyticsVoiceTranscribing}
         >
-          {loading ? "Analyzing..." : "Run Insight"}
+          {loading ? "Analyzing..." : "Run SQL Insight"}
         </button>
       </div>
       {loading && <p className="hint subtle-loader">Analyzing ledger data...</p>}
       {error && <p className="form-error">{error}</p>}
 
       {result && (
-        <div className="analytics-results">
-          <article className="result-card">
-            <div className="row draft-header">
+        <div className="analytics-results insights-analytics-results">
+          <article className="result-card insights-result-card insights-assistant-card">
+            <div className="row draft-header insights-assistant-header">
               <h3>Assistant</h3>
               <button
                 type="button"
-                className="btn-ghost"
+                className="btn-ghost insights-debug-button"
                 onClick={() => setShowDebug((prev) => !prev)}
               >
                 {showDebug ? "Hide technical details" : "Show technical details"}
@@ -4269,23 +4382,30 @@ function AnalyticsPanel({ token, embedded = false }) {
                 {result.answer ?? ""}
               </ReactMarkdown>
             </article>
+
+            <div className="analysis-meta insights-analysis-meta">
+              <span className={`route-chip ${result.route}`}>{result.route.toUpperCase()}</span>
+              <span className="tool-chip">{result.tool}</span>
+              <span className="hint">Confidence {Number(result.confidence ?? 0).toFixed(2)}</span>
+              <span className="insights-sql-state">
+                {result.sql ? "SQL trace visible" : "SQL trace hidden"}
+              </span>
+            </div>
+
             {showDebug && (
               <>
-                <div className="analysis-meta">
-                  <span className={`route-chip ${result.route}`}>{result.route.toUpperCase()}</span>
-                  <span className="tool-chip">{result.tool}</span>
-                  <span className="hint">
-                    Confidence {Number(result.confidence ?? 0).toFixed(2)}
-                  </span>
-                </div>
                 {Array.isArray(result.tool_trace) && result.tool_trace.length > 0 && (
                   <p className="hint">
                     Trace: <code>{result.tool_trace.join(" -> ")}</code>
                   </p>
                 )}
-                {result.sql && (
+                {result.sql ? (
                   <p className="hint">
                     SQL: <code>{result.sql}</code>
+                  </p>
+                ) : (
+                  <p className="hint">
+                    SQL text is hidden in secure mode, but SQL agent execution is enabled.
                   </p>
                 )}
               </>
@@ -4293,11 +4413,11 @@ function AnalyticsPanel({ token, embedded = false }) {
           </article>
 
           {result.chart?.points?.length > 0 && (
-            <article className="result-card">
+            <article className="result-card insights-result-card">
               <h3>{result.chart.title}</h3>
-              <div className="bar-list">
+              <div className="bar-list insights-bar-list">
                 {result.chart.points.map((point) => (
-                  <div className="bar-row" key={`${point.label}-${point.value}`}>
+                  <div className="bar-row insights-bar-row" key={`${point.label}-${point.value}`}>
                     <span>{point.label}</span>
                     <div className="bar-track">
                       <div
@@ -4315,7 +4435,7 @@ function AnalyticsPanel({ token, embedded = false }) {
           )}
 
           {visibleTable && (
-            <article className="result-card">
+            <article className="result-card insights-result-card">
               <h3>Result Table</h3>
               {visibleTable.columns.length === 0 ? (
                 <p>No display-friendly columns returned.</p>
@@ -4375,11 +4495,21 @@ function InsightsPanel({ token }) {
   const [activeView, setActiveView] = useState("overview");
 
   return (
-    <section className="panel">
-      <div className="panel-action-row">
+    <section className="panel insights-panel-shell">
+      <div className="insights-panel-header">
+        <p className="kicker insights-panel-kicker">Insights Studio</p>
+        <h2>Expense Dashboard</h2>
+        <p className="hint insights-panel-subtitle">
+          Dashboard styling inspired by your reference with SQL-agent AI enabled.
+        </p>
+      </div>
+
+      <div className="panel-action-row insights-action-row">
         <div className="insights-switch" role="tablist" aria-label="Insights Sections">
           <button
             type="button"
+            role="tab"
+            aria-selected={activeView === "overview"}
             className={activeView === "overview" ? "insights-tab active" : "insights-tab"}
             onClick={() => setActiveView("overview")}
           >
@@ -4387,10 +4517,12 @@ function InsightsPanel({ token }) {
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeView === "ai"}
             className={activeView === "ai" ? "insights-tab active" : "insights-tab"}
             onClick={() => setActiveView("ai")}
           >
-            Ask AI
+            Ask AI <span className="insights-tab-pill">SQL</span>
           </button>
         </div>
       </div>
@@ -4495,7 +4627,7 @@ export default function App() {
   if (!auth?.token) {
     return (
       <RuntimeErrorBoundary>
-        <main className="app-shell">
+        <main className="app-shell app-shell-unified">
           <Header user={null} onLogout={() => {}} />
           <AuthCard onAuthSuccess={setAuth} />
         </main>
@@ -4506,7 +4638,7 @@ export default function App() {
   if (sessionTransitionVisible) {
     return (
       <RuntimeErrorBoundary>
-        <main className="app-shell">
+        <main className="app-shell app-shell-unified">
           <SessionTransition />
         </main>
       </RuntimeErrorBoundary>
@@ -4515,7 +4647,7 @@ export default function App() {
 
   return (
     <RuntimeErrorBoundary>
-      <main className="app-shell">
+      <main className="app-shell app-shell-unified">
         <ToastNotice message={globalNotice} placement="top-right" />
         <Header
           user={auth.user}
