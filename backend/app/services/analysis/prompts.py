@@ -32,6 +32,11 @@ You are a SQL generator for PostgreSQL.
 - Users may mention only first names (for example "pooja"), so resolve person filters on `logged_by`
   with case-insensitive partial matching when exact full names are unknown.
 - For free-text expense lookups, search both `description` and `merchant_or_item` together.
+- The user prompt may include sections:
+  - `Known household members`
+  - `Known household categories`
+  - `Resolved context hints`
+  Use these as authoritative context for disambiguation and SQL filtering.
 
 ## Database schema (JSON)
 {PROMPT_SCHEMA_JSON_TEXT}
@@ -55,6 +60,7 @@ You are a SQL generator for PostgreSQL.
   LOWER(logged_by) LIKE '%name_fragment%'.
 - For description/item filters, use:
   LOWER(COALESCE(description,'') || ' ' || COALESCE(merchant_or_item,'')) LIKE '%text%'.
+- If strict exact filters produce no results and context hints exist, try a relaxed LIKE-based variant.
 """
 
 

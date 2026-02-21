@@ -86,6 +86,8 @@ class _AnalysisGraphState(TypedDict, total=False):
     resolved_question: str
     fallback_question: str
     context_hints: list[str]
+    household_member_names: list[str]
+    household_category_names: list[str]
     should_fuzzy_retry: bool
     runtime: LLMRuntimeConfig
     execute_sql: SQLExecutor
@@ -492,7 +494,7 @@ async def _resolve_question_context(
     question: str,
     session: AsyncSession,
     household_id: UUID,
-) -> tuple[list[str], bool]:
+) -> tuple[list[str], bool, list[str], list[str]]:
     hints: list[str] = []
     should_fuzzy_retry = False
     member_names, categories, subcategories = await _load_resolution_candidates(
@@ -561,20 +563,28 @@ async def _resolve_question_context(
         )
         should_fuzzy_retry = True
 
-    return hints, should_fuzzy_retry
+    return hints, should_fuzzy_retry, member_names, categories
 
 
 def _augment_question_with_context(
     question: str,
     *,
     hints: list[str],
+    household_member_names: list[str],
+    household_category_names: list[str],
     fuzzy_mode: bool,
 ) -> str:
     clean_question = question.strip()
-    if not hints and not fuzzy_mode:
+    if not hints and not fuzzy_mode and not household_member_names and not household_category_names:
         return clean_question
 
     sections = [clean_question]
+    if household_member_names:
+        member_lines = "\n".join(f"- {name}" for name in household_member_names[:20])
+        sections.append(f"Known household members:\n{member_lines}")
+    if household_category_names:
+        category_lines = "\n".join(f"- {name}" for name in household_category_names[:30])
+        sections.append(f"Known household categories:\n{category_lines}")
     if hints:
         hint_lines = "\n".join(f"- {hint}" for hint in hints)
         sections.append(f"Resolved context hints:\n{hint_lines}")
@@ -633,26 +643,34 @@ async def _graph_resolve_context(state: _AnalysisGraphState) -> _AnalysisGraphSt
     if not question or session is None or household_id is None:
         return {
             "context_hints": _EMPTY_HINTS,
+            "household_member_names": [],
+            "household_category_names": [],
             "should_fuzzy_retry": False,
             "resolved_question": question,
             "fallback_question": question,
         }
-    hints, should_retry = await _resolve_question_context(
+    hints, should_retry, member_names, category_names = await _resolve_question_context(
         question=question,
         session=session,
         household_id=household_id,
     )
     return {
         "context_hints": hints,
+        "household_member_names": member_names,
+        "household_category_names": category_names,
         "should_fuzzy_retry": should_retry,
         "resolved_question": _augment_question_with_context(
             question,
             hints=hints,
+            household_member_names=member_names,
+            household_category_names=category_names,
             fuzzy_mode=False,
         ),
         "fallback_question": _augment_question_with_context(
             question,
             hints=hints,
+            household_member_names=member_names,
+            household_category_names=category_names,
             fuzzy_mode=True,
         ),
     }
@@ -676,10 +694,39 @@ def _graph_should_retry(state: _AnalysisGraphState) -> str:
     primary = state.get("primary_result")
     if primary is None:
         return "use_primary"
-    if primary.success and len(primary.rows) > 0:
-        return "use_primary"
     if not bool(state.get("should_fuzzy_retry")):
         return "use_primary"
+
+    def _looks_like_zero_aggregate_result(result: SQLAgentResult) -> bool:
+        if not result.success or not result.rows or not result.columns:
+            return False
+        metric_indexes = [
+            idx
+            for idx, column in enumerate(result.columns)
+            if re.search(r"(amount|total|sum|spend|value|count)", str(column), flags=re.IGNORECASE)
+        ]
+        if not metric_indexes:
+            return False
+        found_metric = False
+        for row in result.rows:
+            for idx in metric_indexes:
+                if idx >= len(row):
+                    continue
+                raw_value = row[idx]
+                if raw_value in ("", None):
+                    continue
+                try:
+                    value = float(raw_value)
+                except Exception:
+                    return False
+                found_metric = True
+                if abs(value) > 1e-9:
+                    return False
+        return found_metric
+
+    if primary.success and len(primary.rows) > 0 and not _looks_like_zero_aggregate_result(primary):
+        return "use_primary"
+
     resolved_question = str(state.get("resolved_question") or "").strip()
     fallback_question = str(state.get("fallback_question") or "").strip()
     if not fallback_question or fallback_question == resolved_question:

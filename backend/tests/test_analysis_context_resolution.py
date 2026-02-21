@@ -42,8 +42,12 @@ def test_augment_question_appends_context_and_fallback_mode() -> None:
     augmented = _augment_question_with_context(
         "How much did pooja spend on food?",
         hints=["Person mention 'pooja' maps to household member 'Pooja Sharma'."],
+        household_member_names=["Pooja Sharma", "Amit Verma"],
+        household_category_names=["Food", "Groceries", "Healthcare"],
         fuzzy_mode=True,
     )
+    assert "Known household members" in augmented
+    assert "Known household categories" in augmented
     assert "Resolved context hints" in augmented
     assert "Fallback mode for recall" in augmented
 
@@ -68,3 +72,23 @@ def test_graph_retry_path_for_empty_primary_rows() -> None:
     )
     assert route == "retry_with_fuzzy"
 
+
+def test_graph_retry_path_for_zero_aggregate_primary_rows() -> None:
+    primary = SQLAgentResult(
+        success=True,
+        final_sql="SELECT COALESCE(SUM(amount), 0) AS total_spend FROM household_expenses",
+        answer="0",
+        attempts=[],
+        columns=["total_spend"],
+        rows=[[0.0]],
+        tool_trace=["tool_select"],
+    )
+    route = _graph_should_retry(
+        {
+            "primary_result": primary,
+            "should_fuzzy_retry": True,
+            "resolved_question": "q1",
+            "fallback_question": "q2",
+        }
+    )
+    assert route == "retry_with_fuzzy"
