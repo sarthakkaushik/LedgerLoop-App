@@ -1587,6 +1587,32 @@ a:focus-visible {
   color: #617184;
 }
 
+.status-pill.compact {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  gap: 0;
+  background: transparent;
+  color: #617184;
+}
+
+.status-pill.compact::before {
+  width: 10px;
+  height: 10px;
+  opacity: 1;
+  background: currentColor;
+}
+
+.status-pill.compact.confirmed {
+  color: #4ecdc4;
+}
+
+.status-pill.compact.draft {
+  color: #f7a64a;
+}
+
 .panel-action-row {
   margin-bottom: var(--space-2xs);
   display: flex;
@@ -1960,6 +1986,7 @@ a:focus-visible {
 
 .insights-category-grid {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
 }
 
 .insights-card-daily,
@@ -1974,6 +2001,10 @@ a:focus-visible {
 
 .insights-category-grid .insights-card-category {
   grid-column: auto;
+}
+
+.insights-category-grid .insights-result-card {
+  align-self: start;
 }
 
 .insights-result-card {
@@ -4393,6 +4424,19 @@ a:focus-visible {
   border-color: rgba(247, 197, 159, 0.58);
   background: rgba(247, 197, 159, 0.14);
   color: #ffd9c1;
+}
+
+.app-shell-unified .status-pill.compact {
+  border: 0;
+  background: transparent;
+}
+
+.app-shell-unified .status-pill.compact.confirmed {
+  color: #4ecdc4;
+}
+
+.app-shell-unified .status-pill.compact.draft {
+  color: #f7a64a;
 }
 
 .app-shell-unified .recurring-switch {

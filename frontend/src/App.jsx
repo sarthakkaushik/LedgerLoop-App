@@ -667,7 +667,7 @@ function MiniDeactivateToggle({ onClick, label, disabled = false }) {
   );
 }
 
-function StatusPill({ status }) {
+function StatusPill({ status, compact = false }) {
   const normalized = String(status || "")
     .trim()
     .toLowerCase();
@@ -677,6 +677,16 @@ function StatusPill({ status }) {
     className += " confirmed";
   } else if (normalized === "draft") {
     className += " draft";
+  }
+  if (compact) {
+    return (
+      <span
+        className={`${className} compact`}
+        role="img"
+        aria-label={label}
+        title={label}
+      />
+    );
   }
   return <span className={className}>{label}</span>;
 }
@@ -2841,7 +2851,7 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                             />
                           </td>
                           <td>
-                            <StatusPill status={item.status} />
+                            <StatusPill status={item.status} compact />
                           </td>
                           <td>
                             {isEditing ? (
@@ -3078,7 +3088,7 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Status</span>
                         <span className="mobile-data-value">
-                          <StatusPill status={item.status} />
+                          <StatusPill status={item.status} compact />
                         </span>
                       </div>
                       {(canEdit || canDelete) && (
@@ -4110,8 +4120,16 @@ function DashboardPanel({ token, embedded = false }) {
 
   const periodSubtitle = useMemo(() => {
     if (!periodStart || !periodEnd) return "Current month overview";
-    return `${formatDateValue(periodStart)} - ${formatDateValue(periodEnd)}`;
-  }, [periodEnd, periodStart]);
+    const startDate = new Date(`${periodStart}T00:00:00`);
+    if (Number.isNaN(startDate.getTime())) {
+      return `${formatDateValue(periodStart)} - ${formatDateValue(periodEnd)}`;
+    }
+    const windowStart = new Date(startDate);
+    windowStart.setDate(1);
+    windowStart.setMonth(windowStart.getMonth() - Math.max(monthsBack - 1, 0));
+    const windowStartIso = `${windowStart.getFullYear()}-${String(windowStart.getMonth() + 1).padStart(2, "0")}-01`;
+    return `${formatDateValue(windowStartIso)} - ${formatDateValue(periodEnd)}`;
+  }, [monthsBack, periodEnd, periodStart]);
 
   const categoryEntriesByKey = useMemo(() => {
     const grouped = new Map();
@@ -4149,6 +4167,7 @@ function DashboardPanel({ token, embedded = false }) {
             value={monthsBack}
             onChange={(e) => setMonthsBack(Number(e.target.value))}
           >
+            <option value={1}>This month</option>
             <option value={3}>Last 3 months</option>
             <option value={6}>Last 6 months</option>
             <option value={12}>Last 12 months</option>
