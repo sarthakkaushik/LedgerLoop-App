@@ -4542,6 +4542,37 @@ a:focus-visible {
   background: #222136;
 }
 
+.app-shell-unified .taxonomy-category-row strong,
+.app-shell-unified .taxonomy-sub-row span {
+  color: #fffffe;
+}
+
+.app-shell-unified .taxonomy-sub-row {
+  border-color: #34334f;
+  background: #201f33;
+}
+
+.app-shell-unified .taxonomy-sub-list small {
+  color: #a7a9be;
+}
+
+.app-shell-unified .mini-deactivate-toggle {
+  border-color: #4a4964;
+  background: #25243a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.app-shell-unified .mini-deactivate-toggle.on {
+  border-color: rgba(255, 159, 127, 0.62);
+  background: linear-gradient(145deg, #ff9f7f, #ff6b35);
+  box-shadow: 0 6px 14px rgba(217, 90, 45, 0.32);
+}
+
+.app-shell-unified .mini-deactivate-thumb {
+  background: #f6f8fb;
+  box-shadow: 0 2px 8px rgba(3, 4, 9, 0.45);
+}
+
 .app-shell-unified .category-split-item.expanded {
   border-color: #4f4d70;
   background: #24233a;
