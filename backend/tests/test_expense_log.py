@@ -8,11 +8,16 @@ from app.services.llm.base import ExpenseParserProvider
 from app.services.llm.types import ParseContext, ParseResult, ParsedExpense
 
 
-async def register_and_get_token(client: AsyncClient, email: str) -> str:
+async def register_and_get_token(
+    client: AsyncClient,
+    email: str,
+    *,
+    full_name: str = "Test User",
+) -> str:
     payload = {
         "email": email,
         "password": "testpass123",
-        "full_name": "Test User",
+        "full_name": full_name,
         "household_name": "Test Family",
     }
     response = await client.post("/auth/register", json=payload)
@@ -55,6 +60,28 @@ class FakeChatParser(ExpenseParserProvider):
             mode="chat",
             assistant_message="Hello. Ask me to log expenses or answer budget questions.",
             expenses=[],
+            needs_clarification=False,
+            clarification_questions=[],
+        )
+
+
+class FakeParserWithMemberHint(ExpenseParserProvider):
+    async def parse_expenses(self, text: str, context: ParseContext) -> ParseResult:
+        return ParseResult(
+            expenses=[
+                ParsedExpense(
+                    amount=250.0,
+                    currency=context.default_currency,
+                    attributed_family_member_name="Pooja",
+                    category="Food",
+                    description="Lunch",
+                    merchant_or_item="Cafe",
+                    date_incurred=str(context.reference_date),
+                    is_recurring=False,
+                    confidence=0.93,
+                )
+            ],
+            mode="expense",
             needs_clarification=False,
             clarification_questions=[],
         )
@@ -133,5 +160,31 @@ async def test_expense_log_general_chat_response(client: AsyncClient) -> None:
         assert payload["assistant_message"] is not None
         assert payload["expenses"] == []
         assert payload["needs_clarification"] is False
+    finally:
+        app.dependency_overrides.pop(get_expense_parser, None)
+
+
+@pytest.mark.asyncio
+async def test_expense_log_uses_llm_member_hint_to_assign_belongs_to(client: AsyncClient) -> None:
+    from app.main import app
+
+    app.dependency_overrides[get_expense_parser] = lambda: FakeParserWithMemberHint()
+    token = await register_and_get_token(
+        client,
+        "memberhint@example.com",
+        full_name="Pooja Sharma",
+    )
+    try:
+        response = await client.post(
+            "/expenses/log",
+            json={"text": "Pooja spent 250 on lunch"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["mode"] == "expense"
+        assert len(payload["expenses"]) == 1
+        assert payload["expenses"][0]["attributed_family_member_name"] == "Pooja Sharma"
+        assert payload["expenses"][0]["attributed_family_member_type"] == "adult"
     finally:
         app.dependency_overrides.pop(get_expense_parser, None)

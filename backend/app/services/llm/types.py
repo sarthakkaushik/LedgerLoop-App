@@ -15,6 +15,7 @@ class ParseContext(BaseModel):
 class ParsedExpense(BaseModel):
     amount: float | None = None
     currency: str | None = None
+    attributed_family_member_name: str | None = None
     category: str | None = None
     subcategory: str | None = None
     description: str | None = None

@@ -10,6 +10,7 @@ Return valid JSON only with this exact root object:
     {
       "amount": number|null,
       "currency": string|null,
+      "attributed_family_member_name": string|null,
       "category": string|null,
       "subcategory": string|null,
       "description": string|null,
@@ -31,6 +32,11 @@ Rules:
 - Parse multiple expenses from one message.
 - Use context default currency when currency is missing.
 - Use context reference date when date is missing.
+- If a person/family member is explicitly mentioned in the spend text, set attributed_family_member_name.
+- attributed_family_member_name must be chosen from known_household_members.
+- Prefer exact full-name match from known_household_members. If user uses only first name, choose the matching full name when clearly unique.
+- If no person is explicitly mentioned, set attributed_family_member_name=null.
+- Never invent member names not present in known_household_members.
 - Prefer one of known household categories when it clearly matches the text.
 - Use known_taxonomy to select a valid subcategory for the chosen category.
 - If a subcategory is uncertain or does not clearly fit the chosen category, set subcategory=null.

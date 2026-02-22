@@ -51,6 +51,8 @@ from app.services.audio.groq_transcription import (
 from app.services.family_member_service import (
     ensure_linked_family_members_for_household,
     get_family_member_by_id,
+    list_household_family_members,
+    normalize_family_member_name,
     resolve_default_family_member_id_for_user,
 )
 from app.services.llm.base import ExpenseParserProvider
@@ -331,6 +333,52 @@ def _family_member_label(member: FamilyMember | None) -> tuple[str | None, str |
     return member.full_name, member_type
 
 
+def _build_family_member_name_indexes(
+    members: list[FamilyMember],
+) -> tuple[dict[str, list[FamilyMember]], dict[str, list[FamilyMember]]]:
+    by_full_name: dict[str, list[FamilyMember]] = defaultdict(list)
+    by_first_name: dict[str, list[FamilyMember]] = defaultdict(list)
+
+    for member in members:
+        normalized_full_name = normalize_family_member_name(
+            member.normalized_name or member.full_name
+        )
+        if not normalized_full_name:
+            continue
+        by_full_name[normalized_full_name].append(member)
+
+        first_name = normalized_full_name.split()[0]
+        if first_name:
+            by_first_name[first_name].append(member)
+
+    return by_full_name, by_first_name
+
+
+def _resolve_attributed_member_id_from_llm_hint(
+    *,
+    attributed_family_member_name: str | None,
+    members_by_full_name: dict[str, list[FamilyMember]],
+    members_by_first_name: dict[str, list[FamilyMember]],
+) -> UUID | None:
+    normalized_hint = normalize_family_member_name(attributed_family_member_name or "")
+    if not normalized_hint:
+        return None
+
+    exact_matches = members_by_full_name.get(normalized_hint, [])
+    if len(exact_matches) == 1:
+        return exact_matches[0].id
+    if len(exact_matches) > 1:
+        return None
+
+    if " " in normalized_hint:
+        return None
+
+    first_name_matches = members_by_first_name.get(normalized_hint, [])
+    if len(first_name_matches) == 1:
+        return first_name_matches[0].id
+    return None
+
+
 async def _resolve_expense_attributed_member_id(
     session: AsyncSession,
     *,
@@ -408,12 +456,25 @@ async def log_expenses(
         household_id=user.household_id,
     )
     default_member_id = await resolve_default_family_member_id_for_user(session, user=user)
+    family_members = await list_household_family_members(
+        session,
+        household_id=user.household_id,
+        include_inactive=False,
+    )
+    members_by_full_name, members_by_first_name = _build_family_member_name_indexes(
+        family_members
+    )
     new_drafts: list[Expense] = []
     for parsed_expense in parsed.expenses:
+        attributed_member_id = _resolve_attributed_member_id_from_llm_hint(
+            attributed_family_member_name=parsed_expense.attributed_family_member_name,
+            members_by_full_name=members_by_full_name,
+            members_by_first_name=members_by_first_name,
+        )
         draft = Expense(
             household_id=user.household_id,
             logged_by_user_id=user.id,
-            attributed_family_member_id=default_member_id,
+            attributed_family_member_id=attributed_member_id or default_member_id,
             amount=parsed_expense.amount,
             currency=(parsed_expense.currency or context.default_currency).upper(),
             category=parsed_expense.category,

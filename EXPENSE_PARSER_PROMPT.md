@@ -26,6 +26,7 @@ ExpenseDraft schema:
 {
   "amount": number,                       // required if known, else null
   "currency": "INR" | "USD" | "EUR" | null,
+  "attributed_family_member_name": string | null, // member this expense belongs to
   "category": string | null,              // choose from allowed categories
   "description": string | null,           // short user-facing summary
   "merchant_or_item": string | null,      // "electricity bill", "Uber", "groceries"
@@ -50,6 +51,12 @@ Amount rules:
 - Extract only monetary amounts.
 - Ignore quantities, phone numbers, OTPs, and IDs.
 - If one sentence contains multiple amounts with separate intents, create multiple expenses.
+
+Belongs To rules:
+- If input explicitly mentions a household member, set `attributed_family_member_name`.
+- Pick from known household members from runtime context (exact full-name match preferred).
+- If only first name is used, return that member name only when unambiguous.
+- If no explicit person is mentioned, set `attributed_family_member_name` to null.
 
 Recurring rules:
 - Mark `is_recurring = true` only if user clearly indicates recurrence (monthly, every month, subscription, rent each month, etc.).
