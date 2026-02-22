@@ -936,6 +936,14 @@ function QuickAddModal({
     () => taxonomyCategories.map((category) => category.name),
     [taxonomyCategories]
   );
+  const activeFamilyMembers = useMemo(
+    () => (Array.isArray(familyMembers) ? familyMembers.filter((member) => member?.is_active !== false) : []),
+    [familyMembers]
+  );
+  const defaultFamilyMemberId = useMemo(
+    () => getDefaultFamilyMemberId(activeFamilyMembers, user),
+    [activeFamilyMembers, user]
+  );
   const quickAddVoice = useVoiceTranscription({
     token,
     onTranscript: (transcript) => {
@@ -1625,6 +1633,14 @@ function ExpenseLogPanel({ token, user, prefilledText, onPrefilledTextConsumed }
   const [familyMembers, setFamilyMembers] = useState([]);
   const [familyLoading, setFamilyLoading] = useState(false);
   const [familyError, setFamilyError] = useState("");
+  const activeFamilyMembers = useMemo(
+    () => (Array.isArray(familyMembers) ? familyMembers.filter((member) => member?.is_active !== false) : []),
+    [familyMembers]
+  );
+  const defaultFamilyMemberId = useMemo(
+    () => getDefaultFamilyMemberId(activeFamilyMembers, user),
+    [activeFamilyMembers, user]
+  );
 
   useEffect(() => {
     let cancelled = false;
