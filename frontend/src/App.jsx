@@ -650,23 +650,6 @@ function RecurringSwitch({ checked, disabled = false, onToggle, label }) {
   );
 }
 
-function MiniDeactivateToggle({ onClick, label, disabled = false }) {
-  return (
-    <button
-      type="button"
-      className="mini-deactivate-toggle on"
-      role="switch"
-      aria-checked="true"
-      aria-label={label}
-      title="Deactivate"
-      onClick={onClick}
-      disabled={disabled}
-    >
-      <span className="mini-deactivate-thumb" />
-    </button>
-  );
-}
-
 function StatusPill({ status, compact = false }) {
   const normalized = String(status || "")
     .trim()
@@ -3169,7 +3152,8 @@ function SettingsPanel({ token, user, onUserUpdated }) {
   const [editingCategoryName, setEditingCategoryName] = useState("");
   const [editingSubcategoryId, setEditingSubcategoryId] = useState(null);
   const [editingSubcategoryName, setEditingSubcategoryName] = useState("");
-  const [deactivateTarget, setDeactivateTarget] = useState(null);
+  const [expandedCategoryId, setExpandedCategoryId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -3214,11 +3198,22 @@ function SettingsPanel({ token, user, onUserUpdated }) {
     [taxonomy]
   );
 
+  useEffect(() => {
+    if (expandedCategoryId === null) return;
+    if (!taxonomyCategories.some((category) => category.id === expandedCategoryId)) {
+      setExpandedCategoryId(null);
+    }
+  }, [expandedCategoryId, taxonomyCategories]);
+
   const budgetPreviewValue = useMemo(() => {
     const numeric = parseNumeric(budgetInput);
     if (numeric === null || numeric <= 0) return DEFAULT_MONTHLY_BUDGET;
     return Number(numeric.toFixed(2));
   }, [budgetInput]);
+
+  function toggleCategoryExpanded(categoryId) {
+    setExpandedCategoryId((previous) => (previous === categoryId ? null : categoryId));
+  }
 
   function updateSubcategoryInput(categoryId, value) {
     setNewSubcategoryByCategory((prev) => ({ ...prev, [categoryId]: value }));
@@ -3386,6 +3381,7 @@ function SettingsPanel({ token, user, onUserUpdated }) {
     if (!isAdmin || taxonomyBusy) return;
     setEditingCategoryId(null);
     setEditingCategoryName("");
+    setExpandedCategoryId(category.id);
     setEditingSubcategoryId(subcategory.id);
     setEditingSubcategoryName(subcategory.name);
   }
@@ -3421,22 +3417,22 @@ function SettingsPanel({ token, user, onUserUpdated }) {
     }
   }
 
-  async function handleConfirmDeactivate() {
-    if (!deactivateTarget || !isAdmin) return;
+  async function handleConfirmDelete() {
+    if (!deleteTarget || !isAdmin) return;
     setTaxonomyBusy(true);
     setError("");
     setMessage("");
     try {
       let data;
-      if (deactivateTarget.type === "category") {
-        data = await deleteTaxonomyCategory(token, deactivateTarget.category.id);
-        setMessage(`Deactivated category "${deactivateTarget.category.name}".`);
+      if (deleteTarget.type === "category") {
+        data = await deleteTaxonomyCategory(token, deleteTarget.category.id);
+        setMessage(`Deleted category "${deleteTarget.category.name}".`);
       } else {
-        data = await deleteTaxonomySubcategory(token, deactivateTarget.subcategory.id);
-        setMessage(`Deactivated subcategory "${deactivateTarget.subcategory.name}".`);
+        data = await deleteTaxonomySubcategory(token, deleteTarget.subcategory.id);
+        setMessage(`Deleted subcategory "${deleteTarget.subcategory.name}".`);
       }
       setTaxonomy(data);
-      setDeactivateTarget(null);
+      setDeleteTarget(null);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -3589,178 +3585,240 @@ function SettingsPanel({ token, user, onUserUpdated }) {
             <p className="hint">No categories configured yet.</p>
           ) : (
             <div className="taxonomy-list">
-              {taxonomyCategories.map((category) => (
-                <article key={category.id} className="taxonomy-category">
-                  <div className="taxonomy-category-row">
-                    {editingCategoryId === category.id ? (
-                      <div className="taxonomy-inline-edit">
-                        <input
-                          value={editingCategoryName}
-                          onChange={(e) => setEditingCategoryName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              void saveCategoryRename(category);
+              {taxonomyCategories.map((category) => {
+                const subcategoryCount = Array.isArray(category.subcategories) ? category.subcategories.length : 0;
+                const isExpanded = expandedCategoryId === category.id;
+                const isEditingCategory = editingCategoryId === category.id;
+
+                return (
+                  <article key={category.id} className="taxonomy-category">
+                    <div
+                      className={isExpanded ? "taxonomy-category-row expanded" : "taxonomy-category-row"}
+                      role={isEditingCategory ? undefined : "button"}
+                      tabIndex={isEditingCategory ? undefined : 0}
+                      aria-expanded={isEditingCategory ? undefined : isExpanded}
+                      onClick={isEditingCategory ? undefined : () => toggleCategoryExpanded(category.id)}
+                      onKeyDown={
+                        isEditingCategory
+                          ? undefined
+                          : (event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                toggleCategoryExpanded(category.id);
+                              }
                             }
-                            if (e.key === "Escape") {
-                              e.preventDefault();
-                              cancelCategoryRename();
-                            }
-                          }}
-                          disabled={taxonomyBusy}
-                          autoFocus
-                        />
-                        <button
-                          type="button"
-                          className="btn-main"
-                          onClick={() => void saveCategoryRename(category)}
-                          disabled={taxonomyBusy || !editingCategoryName.trim()}
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-ghost"
-                          onClick={cancelCategoryRename}
-                          disabled={taxonomyBusy}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <strong>{category.name}</strong>
-                        <div className="member-actions">
+                      }
+                    >
+                      {isEditingCategory ? (
+                        <div className="taxonomy-inline-edit">
+                          <input
+                            value={editingCategoryName}
+                            onChange={(e) => setEditingCategoryName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void saveCategoryRename(category);
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelCategoryRename();
+                              }
+                            }}
+                            disabled={taxonomyBusy}
+                            autoFocus
+                          />
+                          <button
+                            type="button"
+                            className="btn-main"
+                            onClick={() => void saveCategoryRename(category)}
+                            disabled={taxonomyBusy || !editingCategoryName.trim()}
+                          >
+                            Save
+                          </button>
                           <button
                             type="button"
                             className="btn-ghost"
-                            onClick={() => startCategoryRename(category)}
+                            onClick={cancelCategoryRename}
                             disabled={taxonomyBusy}
                           >
-                            Rename
+                            Cancel
                           </button>
-                          <MiniDeactivateToggle
-                            onClick={() => setDeactivateTarget({ type: "category", category })}
-                            disabled={taxonomyBusy}
-                            label={`Deactivate category ${category.name}`}
-                          />
                         </div>
-                      </>
-                    )}
-                  </div>
-
-                  <div className="taxonomy-sub-list">
-                    {category.subcategories.length === 0 ? (
-                      <small>No subcategories.</small>
-                    ) : (
-                      category.subcategories.map((subcategory) => (
-                        <div key={subcategory.id} className="taxonomy-sub-row">
-                          {editingSubcategoryId === subcategory.id ? (
-                            <div className="taxonomy-inline-edit">
-                              <input
-                                value={editingSubcategoryName}
-                                onChange={(e) => setEditingSubcategoryName(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    void saveSubcategoryRename(category, subcategory);
-                                  }
-                                  if (e.key === "Escape") {
-                                    e.preventDefault();
-                                    cancelSubcategoryRename();
-                                  }
-                                }}
-                                disabled={taxonomyBusy}
-                                autoFocus
-                              />
-                              <button
-                                type="button"
-                                className="btn-main"
-                                onClick={() => void saveSubcategoryRename(category, subcategory)}
-                                disabled={taxonomyBusy || !editingSubcategoryName.trim()}
-                              >
-                                Save
-                              </button>
+                      ) : (
+                        <>
+                          <div className="taxonomy-category-main">
+                            <strong>{category.name}</strong>
+                            {!isExpanded && (
+                              <span className="taxonomy-subcount-badge">
+                                {subcategoryCount} {subcategoryCount === 1 ? "subcategory" : "subcategories"}
+                              </span>
+                            )}
+                          </div>
+                          <div className="taxonomy-category-actions">
+                            <div
+                              className="member-actions"
+                              onClick={(event) => event.stopPropagation()}
+                              onKeyDown={(event) => event.stopPropagation()}
+                            >
                               <button
                                 type="button"
                                 className="btn-ghost"
-                                onClick={cancelSubcategoryRename}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  startCategoryRename(category);
+                                }}
                                 disabled={taxonomyBusy}
                               >
-                                Cancel
+                                Rename
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-danger"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setDeleteTarget({ type: "category", category });
+                                }}
+                                disabled={taxonomyBusy}
+                              >
+                                Delete
                               </button>
                             </div>
-                          ) : (
-                            <>
-                              <span>{subcategory.name}</span>
-                              <div className="member-actions">
-                                <button
-                                  type="button"
-                                  className="btn-ghost"
-                                  onClick={() => startSubcategoryRename(category, subcategory)}
-                                  disabled={taxonomyBusy}
-                                >
-                                  Rename
-                                </button>
-                                <MiniDeactivateToggle
-                                  onClick={() =>
-                                    setDeactivateTarget({ type: "subcategory", category, subcategory })
-                                  }
-                                  disabled={taxonomyBusy}
-                                  label={`Deactivate subcategory ${subcategory.name}`}
-                                />
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      ))
-                    )}
-                  </div>
+                            <span
+                              className={
+                                isExpanded
+                                  ? "taxonomy-category-chevron expanded"
+                                  : "taxonomy-category-chevron"
+                              }
+                              aria-hidden="true"
+                            >
+                              v
+                            </span>
+                          </div>
+                        </>
+                      )}
+                    </div>
 
-                  <div className="taxonomy-create-row">
-                    <input
-                      value={newSubcategoryByCategory[category.id] || ""}
-                      onChange={(e) => updateSubcategoryInput(category.id, e.target.value)}
-                      placeholder={`Add subcategory for ${category.name}`}
-                      disabled={taxonomyBusy}
-                    />
-                    <button
-                      type="button"
-                      className="icon-plus-button"
-                      onClick={() => handleCreateSubcategory(category)}
-                      aria-label={`Add subcategory under ${category.name}`}
-                      title={`Add subcategory under ${category.name}`}
-                      disabled={taxonomyBusy || !String(newSubcategoryByCategory[category.id] || "").trim()}
+                    <div
+                      className={isExpanded ? "taxonomy-category-content expanded" : "taxonomy-category-content"}
+                      aria-hidden={!isExpanded}
                     >
-                      <PlusIcon />
-                      <span className="sr-only">Add subcategory</span>
-                    </button>
-                  </div>
-                </article>
-              ))}
+                      <div className="taxonomy-sub-list">
+                        {category.subcategories.length === 0 ? (
+                          <small>No subcategories.</small>
+                        ) : (
+                          category.subcategories.map((subcategory) => (
+                            <div key={subcategory.id} className="taxonomy-sub-row">
+                              {editingSubcategoryId === subcategory.id ? (
+                                <div className="taxonomy-inline-edit">
+                                  <input
+                                    value={editingSubcategoryName}
+                                    onChange={(e) => setEditingSubcategoryName(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        void saveSubcategoryRename(category, subcategory);
+                                      }
+                                      if (e.key === "Escape") {
+                                        e.preventDefault();
+                                        cancelSubcategoryRename();
+                                      }
+                                    }}
+                                    disabled={taxonomyBusy}
+                                    autoFocus
+                                  />
+                                  <button
+                                    type="button"
+                                    className="btn-main"
+                                    onClick={() => void saveSubcategoryRename(category, subcategory)}
+                                    disabled={taxonomyBusy || !editingSubcategoryName.trim()}
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-ghost"
+                                    onClick={cancelSubcategoryRename}
+                                    disabled={taxonomyBusy}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <>
+                                  <span>{subcategory.name}</span>
+                                  <div className="member-actions">
+                                    <button
+                                      type="button"
+                                      className="btn-ghost"
+                                      onClick={() => startSubcategoryRename(category, subcategory)}
+                                      disabled={taxonomyBusy}
+                                    >
+                                      Rename
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-danger"
+                                      onClick={() =>
+                                        setDeleteTarget({ type: "subcategory", category, subcategory })
+                                      }
+                                      disabled={taxonomyBusy}
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="taxonomy-create-row taxonomy-sub-create-row">
+                        <input
+                          value={newSubcategoryByCategory[category.id] || ""}
+                          onChange={(e) => updateSubcategoryInput(category.id, e.target.value)}
+                          placeholder={`Add subcategory for ${category.name}`}
+                          disabled={taxonomyBusy}
+                        />
+                        <button
+                          type="button"
+                          className="icon-plus-button"
+                          onClick={() => handleCreateSubcategory(category)}
+                          aria-label={`Add subcategory under ${category.name}`}
+                          title={`Add subcategory under ${category.name}`}
+                          disabled={taxonomyBusy || !String(newSubcategoryByCategory[category.id] || "").trim()}
+                        >
+                          <PlusIcon />
+                          <span className="sr-only">Add subcategory</span>
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </article>
       )}
 
       <ConfirmModal
-        open={Boolean(deactivateTarget)}
+        open={Boolean(deleteTarget)}
         title={
-          deactivateTarget?.type === "category"
-            ? "Deactivate this category?"
-            : "Deactivate this subcategory?"
+          deleteTarget?.type === "category"
+            ? "Delete this category?"
+            : "Delete this subcategory?"
         }
         description={
-          deactivateTarget?.type === "category"
-            ? `Deactivate "${deactivateTarget.category.name}" and all its subcategories?`
-            : deactivateTarget
-              ? `Deactivate "${deactivateTarget.subcategory.name}" under "${deactivateTarget.category.name}"?`
+          deleteTarget?.type === "category"
+            ? `Delete "${deleteTarget.category.name}" and all its subcategories?`
+            : deleteTarget
+              ? `Delete "${deleteTarget.subcategory.name}" under "${deleteTarget.category.name}"?`
               : ""
         }
-        confirmLabel="Deactivate"
+        confirmLabel="Delete"
         busy={taxonomyBusy}
-        onCancel={() => setDeactivateTarget(null)}
-        onConfirm={handleConfirmDeactivate}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={handleConfirmDelete}
       />
     </section>
   );
