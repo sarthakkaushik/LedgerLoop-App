@@ -2090,6 +2090,87 @@ function HouseholdPanel({ token, user }) {
     }
   }
 
+  function handleStartFamilyEdit(member) {
+    setEditingFamilyId(member.id);
+    setEditingFamilyDraft({
+      full_name: String(member?.full_name || ""),
+      member_type: normalizeMemberType(member?.member_type),
+    });
+  }
+
+  function handleCancelFamilyEdit() {
+    if (savingFamily) return;
+    setEditingFamilyId("");
+    setEditingFamilyDraft({ full_name: "", member_type: "other" });
+  }
+
+  async function handleCreateFamilyProfile() {
+    const name = String(newFamilyProfile.full_name || "").trim();
+    if (!name) {
+      setError("Enter a family member name.");
+      return;
+    }
+    setSavingFamily(true);
+    setError("");
+    setMessage("");
+    try {
+      const created = await createFamilyMember(token, {
+        full_name: name,
+        member_type: normalizeMemberType(newFamilyProfile.member_type),
+      });
+      setMessage(`Family profile added for ${created.full_name}.`);
+      setNewFamilyProfile({ full_name: "", member_type: "child" });
+      await loadPeopleData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingFamily(false);
+    }
+  }
+
+  async function handleSaveFamilyProfileEdit(memberId) {
+    const name = String(editingFamilyDraft.full_name || "").trim();
+    if (!name) {
+      setError("Enter a valid family profile name.");
+      return;
+    }
+    setSavingFamily(true);
+    setError("");
+    setMessage("");
+    try {
+      const updated = await updateFamilyMember(token, memberId, {
+        full_name: name,
+        member_type: normalizeMemberType(editingFamilyDraft.member_type),
+      });
+      setMessage(`Family profile updated for ${updated.full_name}.`);
+      handleCancelFamilyEdit();
+      await loadPeopleData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingFamily(false);
+    }
+  }
+
+  async function handleDeactivateFamilyProfile(member) {
+    if (!member?.id) return;
+    setDeactivatingFamilyId(member.id);
+    setError("");
+    setMessage("");
+    try {
+      const data = await deleteFamilyMemberProfile(token, member.id);
+      setMessage(data.message || "Family profile removed.");
+      if (editingFamilyId === member.id) {
+        handleCancelFamilyEdit();
+      }
+      await loadPeopleData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeactivatingFamilyId(null);
+    }
+  }
+
   return (
     <section className="panel">
       <div className="panel-action-row">
@@ -2452,87 +2533,6 @@ function RecurringPanel({ token, user }) {
       setError(err.message);
     } finally {
       setLoading(false);
-    }
-  }
-
-  function handleStartFamilyEdit(member) {
-    setEditingFamilyId(member.id);
-    setEditingFamilyDraft({
-      full_name: String(member?.full_name || ""),
-      member_type: normalizeMemberType(member?.member_type),
-    });
-  }
-
-  function handleCancelFamilyEdit() {
-    if (savingFamily) return;
-    setEditingFamilyId("");
-    setEditingFamilyDraft({ full_name: "", member_type: "other" });
-  }
-
-  async function handleCreateFamilyProfile() {
-    const name = String(newFamilyProfile.full_name || "").trim();
-    if (!name) {
-      setError("Enter a family member name.");
-      return;
-    }
-    setSavingFamily(true);
-    setError("");
-    setMessage("");
-    try {
-      const created = await createFamilyMember(token, {
-        full_name: name,
-        member_type: normalizeMemberType(newFamilyProfile.member_type),
-      });
-      setMessage(`Family profile added for ${created.full_name}.`);
-      setNewFamilyProfile({ full_name: "", member_type: "child" });
-      await loadPeopleData();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSavingFamily(false);
-    }
-  }
-
-  async function handleSaveFamilyProfileEdit(memberId) {
-    const name = String(editingFamilyDraft.full_name || "").trim();
-    if (!name) {
-      setError("Enter a valid family profile name.");
-      return;
-    }
-    setSavingFamily(true);
-    setError("");
-    setMessage("");
-    try {
-      const updated = await updateFamilyMember(token, memberId, {
-        full_name: name,
-        member_type: normalizeMemberType(editingFamilyDraft.member_type),
-      });
-      setMessage(`Family profile updated for ${updated.full_name}.`);
-      handleCancelFamilyEdit();
-      await loadPeopleData();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSavingFamily(false);
-    }
-  }
-
-  async function handleDeactivateFamilyProfile(member) {
-    if (!member?.id) return;
-    setDeactivatingFamilyId(member.id);
-    setError("");
-    setMessage("");
-    try {
-      const data = await deleteFamilyMemberProfile(token, member.id);
-      setMessage(data.message || "Family profile removed.");
-      if (editingFamilyId === member.id) {
-        handleCancelFamilyEdit();
-      }
-      await loadPeopleData();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setDeactivatingFamilyId(null);
     }
   }
 
