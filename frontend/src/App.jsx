@@ -2058,6 +2058,8 @@ function HouseholdPanel({ token, user }) {
 
 function RecurringPanel({ token, user }) {
   const [feed, setFeed] = useState(null);
+  const [taxonomy, setTaxonomy] = useState({ categories: [] });
+  const [taxonomyError, setTaxonomyError] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingExpenseId, setDeletingExpenseId] = useState(null);
@@ -2074,17 +2076,45 @@ function RecurringPanel({ token, user }) {
     merchant_or_item: "",
     date_incurred: todayIsoDate(),
   });
+  const taxonomyCategories = useMemo(
+    () => (Array.isArray(taxonomy?.categories) ? taxonomy.categories : []),
+    [taxonomy]
+  );
+  const taxonomyCategoryOptions = useMemo(
+    () => taxonomyCategories.map((category) => category.name),
+    [taxonomyCategories]
+  );
+
+  function getSubcategoryOptions(categoryName) {
+    const normalized = normalizeTaxonomyName(categoryName);
+    if (!normalized) return [];
+    const match = taxonomyCategories.find(
+      (category) => normalizeTaxonomyName(category.name) === normalized
+    );
+    return (match?.subcategories || []).map((subcategory) => subcategory.name);
+  }
 
   async function loadRecurringData() {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchExpenseFeed(token, {
-        status: "confirmed",
-        limit: 300,
-        recurringOnly: true,
-      });
+      const taxonomyPromise = fetchTaxonomy(token)
+        .then((data) => ({ data, error: "" }))
+        .catch((err) => ({
+          data: { categories: [] },
+          error: String(err?.message || "Could not load taxonomy options."),
+        }));
+      const [data, taxonomyResult] = await Promise.all([
+        fetchExpenseFeed(token, {
+          status: "confirmed",
+          limit: 300,
+          recurringOnly: true,
+        }),
+        taxonomyPromise,
+      ]);
       setFeed(data);
+      setTaxonomy(taxonomyResult.data);
+      setTaxonomyError(taxonomyResult.error);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -2105,7 +2135,22 @@ function RecurringPanel({ token, user }) {
   }, [message]);
 
   function updateForm(field, value) {
-    setForm((prev) => ({ ...prev, [field]: value }));
+    setForm((prev) => {
+      const next = { ...prev, [field]: value };
+      if (field === "category") {
+        const options = getSubcategoryOptions(value);
+        if (
+          next.subcategory &&
+          !options.some((subcategory) => normalizeTaxonomyName(subcategory) === normalizeTaxonomyName(next.subcategory))
+        ) {
+          next.subcategory = "";
+        }
+      }
+      if (field === "subcategory" && !value) {
+        next.subcategory = "";
+      }
+      return next;
+    });
   }
 
   async function handleAddRecurringExpense() {
@@ -2172,6 +2217,7 @@ function RecurringPanel({ token, user }) {
       </div>
       <p className="hint">Track monthly bills like rent, school fees, subscriptions, and other repeat spends.</p>
       {error && <p className="form-error">{error}</p>}
+      {taxonomyError && <p className="hint">{taxonomyError}</p>}
       {warnings.length > 0 && (
         <ul className="taxonomy-warnings">
           {warnings.map((warning, index) => (
@@ -2217,19 +2263,41 @@ function RecurringPanel({ token, user }) {
           </label>
           <label>
             Category
-            <input
-              value={form.category}
+            <select
+              value={form.category || ""}
               onChange={(e) => updateForm("category", e.target.value)}
-              placeholder="Rent, School Fees, Utilities"
-            />
+            >
+              <option value="">Select category</option>
+              {form.category &&
+                !taxonomyCategoryOptions.some(
+                  (category) => normalizeTaxonomyName(category) === normalizeTaxonomyName(form.category)
+                ) && <option value={form.category}>{form.category}</option>}
+              {taxonomyCategoryOptions.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             Subcategory
-            <input
-              value={form.subcategory}
+            <select
+              value={form.subcategory || ""}
               onChange={(e) => updateForm("subcategory", e.target.value)}
-              placeholder="Optional"
-            />
+              disabled={!form.category}
+            >
+              <option value="">Select subcategory</option>
+              {form.subcategory &&
+                !getSubcategoryOptions(form.category).some(
+                  (subcategory) =>
+                    normalizeTaxonomyName(subcategory) === normalizeTaxonomyName(form.subcategory)
+                ) && <option value={form.subcategory}>{form.subcategory}</option>}
+              {getSubcategoryOptions(form.category).map((subcategory) => (
+                <option key={`${form.category}-${subcategory}`} value={subcategory}>
+                  {subcategory}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             Description
