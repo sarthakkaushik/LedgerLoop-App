@@ -590,6 +590,20 @@ code {
   padding-bottom: 14px;
 }
 
+.content-header-insights {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.content-header-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+
 .content-header h1 {
   font-size: clamp(1.4rem, 3.2cqi, 2rem);
   letter-spacing: -0.03em;
@@ -4017,6 +4031,20 @@ a:focus-visible {
 @container workspace (max-width: 720px) {
   .content-header h1 {
     font-size: var(--text-lg);
+  }
+
+  .content-header-insights {
+    align-items: flex-start;
+  }
+
+  .content-header-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .content-header-actions .insights-switch {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .result-card,

@@ -5025,34 +5025,34 @@ function AnalyticsPanel({ token, embedded = false }) {
   );
 }
 
-function InsightsPanel({ token }) {
-  const [activeView, setActiveView] = useState("overview");
+function InsightsViewSwitch({ activeView, onChange }) {
+  return (
+    <div className="insights-switch" role="tablist" aria-label="Insights Sections">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeView === "overview"}
+        className={activeView === "overview" ? "insights-tab active" : "insights-tab"}
+        onClick={() => onChange("overview")}
+      >
+        Overview
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeView === "ai"}
+        className={activeView === "ai" ? "insights-tab active" : "insights-tab"}
+        onClick={() => onChange("ai")}
+      >
+        Ask AI <span className="insights-tab-pill">SQL</span>
+      </button>
+    </div>
+  );
+}
 
+function InsightsPanel({ token, activeView }) {
   return (
     <section className="panel insights-panel-shell">
-      <div className="panel-action-row insights-action-row">
-        <div className="insights-switch" role="tablist" aria-label="Insights Sections">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeView === "overview"}
-            className={activeView === "overview" ? "insights-tab active" : "insights-tab"}
-            onClick={() => setActiveView("overview")}
-          >
-            Overview
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeView === "ai"}
-            className={activeView === "ai" ? "insights-tab active" : "insights-tab"}
-            onClick={() => setActiveView("ai")}
-          >
-            Ask AI <span className="insights-tab-pill">SQL</span>
-          </button>
-        </div>
-      </div>
-
       {activeView === "overview" ? (
         <DashboardPanel token={token} embedded />
       ) : (
@@ -5074,6 +5074,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("insights");
   const [sessionTransitionVisible, setSessionTransitionVisible] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [insightsView, setInsightsView] = useState("overview");
   const [capturePrefillText, setCapturePrefillText] = useState("");
   const [globalNotice, setGlobalNotice] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
@@ -5235,8 +5236,13 @@ export default function App() {
             ))}
           </aside>
           <div className="content">
-            <div className="content-header">
+            <div className={activeTab === "insights" ? "content-header content-header-insights" : "content-header"}>
               <h1>{tabLabel}</h1>
+              {activeTab === "insights" && (
+                <div className="content-header-actions">
+                  <InsightsViewSwitch activeView={insightsView} onChange={setInsightsView} />
+                </div>
+              )}
             </div>
             {activeTab === "capture" && (
               <ExpenseLogPanel
@@ -5249,7 +5255,7 @@ export default function App() {
               <LedgerPanel token={auth.token} user={auth.user} onOpenSettings={() => setActiveTab("settings")} />
             )}
             {activeTab === "recurring" && <RecurringPanel token={auth.token} user={auth.user} />}
-            {activeTab === "insights" && <InsightsPanel token={auth.token} />}
+            {activeTab === "insights" && <InsightsPanel token={auth.token} activeView={insightsView} />}
             {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
             {activeTab === "settings" && (
               <SettingsPanel
