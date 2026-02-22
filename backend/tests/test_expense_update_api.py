@@ -132,6 +132,7 @@ async def test_user_can_update_own_expense(client: AsyncClient) -> None:
         assert payload["item"]["currency"] == "INR"
         assert payload["item"]["description"] == "Updated note"
         assert payload["item"]["subcategory"] is None
+        assert payload["item"]["attributed_family_member_name"]
 
         list_res = await client.get(
             "/expenses/list?status=all",

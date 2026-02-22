@@ -178,6 +178,7 @@ async def test_dashboard_aggregates_and_household_isolation(client: AsyncClient)
         assert len(data["daily_burn"]) >= 1
         assert [item["category"] for item in data["category_split"]] == ["Bills", "Groceries"]
         assert len(data["user_split"]) == 2
+        assert len(data["family_member_split"]) == 2
         assert data["monthly_trend"][-1]["total"] == 1000.0
         assert data["monthly_trend"][-2]["total"] == 250.0
     finally:

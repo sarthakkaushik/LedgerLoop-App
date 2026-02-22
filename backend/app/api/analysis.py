@@ -48,7 +48,7 @@ _UUID_RE = re.compile(
 )
 _INTERNAL_ID_COL_RE = re.compile(r"_id$", flags=re.IGNORECASE)
 _INTERNAL_TOKEN_RE = re.compile(
-    r"\b(?:expense_id|household_id|logged_by_user_id|user_id)\b",
+    r"\b(?:expense_id|household_id|logged_by_user_id|user_id|attributed_family_member_id|family_member_id)\b",
     flags=re.IGNORECASE,
 )
 _NON_WORD_RE = re.compile(r"[^a-z0-9]+")
@@ -122,6 +122,9 @@ WITH household_expenses AS (
     CAST(e.household_id AS TEXT) AS household_id,
     CAST(e.logged_by_user_id AS TEXT) AS logged_by_user_id,
     COALESCE(u.full_name,'Unknown') AS logged_by,
+    CAST(e.attributed_family_member_id AS TEXT) AS attributed_family_member_id,
+    COALESCE(fm.full_name, u.full_name, 'Unknown') AS attributed_family_member,
+    CAST(fm.member_type AS TEXT) AS attributed_member_type,
     CAST(e.status AS TEXT) AS status,
     COALESCE(e.category,'Other') AS category,
     e.subcategory AS subcategory,
@@ -136,6 +139,7 @@ WITH household_expenses AS (
     CAST(e.updated_at AS TEXT) AS updated_at
   FROM expenses e
   LEFT JOIN users u ON u.id = e.logged_by_user_id
+  LEFT JOIN family_members fm ON fm.id = e.attributed_family_member_id
   WHERE CAST(e.household_id AS TEXT)=:household_id
 )
 """
@@ -191,7 +195,14 @@ def _redact_uuids(text: str) -> str:
 
 def _is_internal_id_column(column: str) -> bool:
     normalized = column.strip().lower()
-    if normalized in {"expense_id", "household_id", "logged_by_user_id", "user_id"}:
+    if normalized in {
+        "expense_id",
+        "household_id",
+        "logged_by_user_id",
+        "user_id",
+        "attributed_family_member_id",
+        "family_member_id",
+    }:
         return True
     return bool(_INTERNAL_ID_COL_RE.search(normalized))
 
@@ -255,7 +266,14 @@ def _build_friendly_row_summary(
     columns: list[str],
     row: list[str | float | int],
 ) -> str:
-    person_idx = _find_column_index(columns, "logged_by", "user_name", "member", "person")
+    person_idx = _find_column_index(
+        columns,
+        "attributed_family_member",
+        "member",
+        "person",
+        "logged_by",
+        "user_name",
+    )
     amount_idx = _find_column_index(columns, "amount", "total", "sum", "spend")
     currency_idx = _find_column_index(columns, "currency")
     category_idx = _find_column_index(columns, "category")
@@ -346,7 +364,17 @@ def _looks_like_raw_table_dump(text: str) -> bool:
     low = stripped.lower()
     if "------" in stripped and "|" in stripped:
         return True
-    if any(token in low for token in ("user_id", "expense_id", "household_id", "logged_by_user_id")):
+    if any(
+        token in low
+        for token in (
+            "user_id",
+            "expense_id",
+            "household_id",
+            "logged_by_user_id",
+            "attributed_family_member_id",
+            "family_member_id",
+        )
+    ):
         return True
     if stripped.startswith("[{") or stripped.startswith("{'") or stripped.startswith("[("):
         return True
@@ -761,7 +789,8 @@ def _augment_question_with_context(
         sections.append(f"Known household subcategories (unique):\n{subcategory_lines}")
     sections.append(
         "Column usage hints:\n"
-        "- Person/member name: logged_by\n"
+        "- Person/member spend ownership: attributed_family_member\n"
+        "- Who logged the expense: logged_by\n"
         "- Category: category\n"
         "- Subcategory: subcategory\n"
         "- Free text: description + merchant_or_item\n"
@@ -775,7 +804,7 @@ def _augment_question_with_context(
     if fuzzy_mode:
         sections.append(
             "Fallback mode for recall: if strict filters return no rows, relax filters with "
-            "LOWER(CAST(column AS TEXT)) LIKE '%term%' for logged_by, category, and subcategory. "
+            "LOWER(CAST(column AS TEXT)) LIKE '%term%' for attributed_family_member, logged_by, category, and subcategory. "
             "For free-text matching, search LOWER(COALESCE(description,'') || ' ' || COALESCE(merchant_or_item,'')) "
             "with LIKE."
         )

@@ -25,6 +25,11 @@ class Expense(SQLModel, table=True):
         nullable=False,
         index=True,
     )
+    attributed_family_member_id: UUID | None = Field(
+        default=None,
+        foreign_key="family_members.id",
+        index=True,
+    )
     amount: float | None = Field(default=None)
     currency: str = Field(sa_column=Column(String(8), nullable=False, default="INR"))
     category: str | None = Field(default=None, max_length=80)

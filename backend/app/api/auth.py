@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 import secrets
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from sqlmodel import select
 
 from app.api.deps import get_current_admin, get_current_user
 from app.core.db import get_session
+from app.models.family_member import FamilyMember
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.household import Household
 from app.models.user import User, UserRole
@@ -267,6 +269,19 @@ async def delete_household_member(
 
     member.is_active = False
     session.add(member)
+
+    linked_family_result = await session.execute(
+        select(FamilyMember).where(
+            FamilyMember.household_id == current_user.household_id,
+            FamilyMember.linked_user_id == member.id,
+        )
+    )
+    now = datetime.now(UTC).replace(tzinfo=None)
+    for family_member in linked_family_result.scalars().all():
+        family_member.linked_user_id = None
+        family_member.updated_at = now
+        session.add(family_member)
+
     await session.commit()
 
     return DeleteMemberResponse(

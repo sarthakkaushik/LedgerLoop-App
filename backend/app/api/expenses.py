@@ -15,6 +15,7 @@ from app.api.deps import get_current_user, get_expense_parser, get_llm_parse_con
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.models.expense import Expense, ExpenseStatus
+from app.models.family_member import FamilyMember
 from app.models.household_category import HouseholdCategory
 from app.models.household_subcategory import HouseholdSubcategory
 from app.models.user import User, UserRole
@@ -22,6 +23,7 @@ from app.schemas.expense import (
     ExpenseAudioTranscriptionResponse,
     DashboardCategoryPoint,
     DashboardDailyPoint,
+    DashboardFamilyMemberPoint,
     DashboardMonthlyPoint,
     DashboardUserPoint,
     ExpenseDeleteResponse,
@@ -45,6 +47,11 @@ from app.services.audio.groq_transcription import (
     GroqTranscriptionConfigError,
     GroqTranscriptionUpstreamError,
     transcribe_audio_with_groq,
+)
+from app.services.family_member_service import (
+    ensure_linked_family_members_for_household,
+    get_family_member_by_id,
+    resolve_default_family_member_id_for_user,
 )
 from app.services.llm.base import ExpenseParserProvider
 from app.services.llm.provider_factory import ProviderNotConfiguredError
@@ -83,9 +90,21 @@ def _parse_date_incurred(value: str | None, fallback: date) -> date:
         return fallback
 
 
-def _to_expense_draft(expense: Expense) -> ExpenseDraft:
+def _to_expense_draft(
+    expense: Expense,
+    *,
+    attributed_family_member_name: str | None = None,
+    attributed_family_member_type: str | None = None,
+) -> ExpenseDraft:
     return ExpenseDraft(
         id=str(expense.id),
+        attributed_family_member_id=(
+            str(expense.attributed_family_member_id)
+            if expense.attributed_family_member_id
+            else None
+        ),
+        attributed_family_member_name=attributed_family_member_name,
+        attributed_family_member_type=attributed_family_member_type,
         amount=expense.amount,
         currency=expense.currency,
         category=expense.category,
@@ -98,9 +117,22 @@ def _to_expense_draft(expense: Expense) -> ExpenseDraft:
     )
 
 
-def _to_expense_feed_item(expense: Expense, logged_by_name: str) -> ExpenseFeedItem:
+def _to_expense_feed_item(
+    expense: Expense,
+    logged_by_name: str,
+    *,
+    attributed_family_member_name: str | None = None,
+    attributed_family_member_type: str | None = None,
+) -> ExpenseFeedItem:
     return ExpenseFeedItem(
         id=str(expense.id),
+        attributed_family_member_id=(
+            str(expense.attributed_family_member_id)
+            if expense.attributed_family_member_id
+            else None
+        ),
+        attributed_family_member_name=attributed_family_member_name,
+        attributed_family_member_type=attributed_family_member_type,
         amount=expense.amount,
         currency=expense.currency,
         category=expense.category,
@@ -115,6 +147,19 @@ def _to_expense_feed_item(expense: Expense, logged_by_name: str) -> ExpenseFeedI
         created_at=expense.created_at.isoformat(),
         updated_at=expense.updated_at.isoformat(),
     )
+
+
+def _parse_optional_member_uuid(value: str | None, *, field_name: str) -> UUID | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return UUID(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid {field_name}",
+        ) from exc
 
 
 def _build_expense_filters(
@@ -247,6 +292,67 @@ async def _resolve_user_names(
     return {member.id: member.full_name for member in users_result.scalars().all()}
 
 
+async def _resolve_family_members_by_id(
+    session: AsyncSession,
+    family_member_ids: set[UUID],
+) -> dict[UUID, FamilyMember]:
+    if not family_member_ids:
+        return {}
+    result = await session.execute(
+        select(FamilyMember).where(FamilyMember.id.in_(list(family_member_ids)))
+    )
+    return {member.id: member for member in result.scalars().all()}
+
+
+async def _resolve_family_members_by_linked_user(
+    session: AsyncSession,
+    household_id: UUID,
+    user_ids: set[UUID],
+) -> dict[UUID, FamilyMember]:
+    if not user_ids:
+        return {}
+    result = await session.execute(
+        select(FamilyMember).where(
+            FamilyMember.household_id == household_id,
+            FamilyMember.linked_user_id.in_(list(user_ids)),
+        )
+    )
+    return {
+        member.linked_user_id: member
+        for member in result.scalars().all()
+        if member.linked_user_id is not None
+    }
+
+
+def _family_member_label(member: FamilyMember | None) -> tuple[str | None, str | None]:
+    if not member:
+        return None, None
+    member_type = member.member_type.value if hasattr(member.member_type, "value") else str(member.member_type)
+    return member.full_name, member_type
+
+
+async def _resolve_expense_attributed_member_id(
+    session: AsyncSession,
+    *,
+    user: User,
+    attributed_family_member_id: UUID | None,
+) -> UUID:
+    if attributed_family_member_id:
+        member = await get_family_member_by_id(
+            session,
+            household_id=user.household_id,
+            family_member_id=attributed_family_member_id,
+            active_only=True,
+        )
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="attributed_family_member_id must be an active family profile in your household.",
+            )
+        return member.id
+    return await resolve_default_family_member_id_for_user(session, user=user)
+
+
 def _first_day_of_month(value: date) -> date:
     return value.replace(day=1)
 
@@ -297,11 +403,17 @@ async def log_expenses(
             clarification_questions=parsed.clarification_questions,
         )
 
+    await ensure_linked_family_members_for_household(
+        session,
+        household_id=user.household_id,
+    )
+    default_member_id = await resolve_default_family_member_id_for_user(session, user=user)
     new_drafts: list[Expense] = []
     for parsed_expense in parsed.expenses:
         draft = Expense(
             household_id=user.household_id,
             logged_by_user_id=user.id,
+            attributed_family_member_id=default_member_id,
             amount=parsed_expense.amount,
             currency=(parsed_expense.currency or context.default_currency).upper(),
             category=parsed_expense.category,
@@ -323,10 +435,28 @@ async def log_expenses(
     for draft in new_drafts:
         await session.refresh(draft)
 
+    draft_member_ids = {
+        expense.attributed_family_member_id
+        for expense in new_drafts
+        if expense.attributed_family_member_id is not None
+    }
+    family_members_by_id = await _resolve_family_members_by_id(session, draft_member_ids)
+
     return ExpenseLogResponse(
         mode="expense",
         assistant_message=parsed.assistant_message,
-        expenses=[_to_expense_draft(expense) for expense in new_drafts],
+        expenses=[
+            _to_expense_draft(
+                expense,
+                attributed_family_member_name=_family_member_label(
+                    family_members_by_id.get(expense.attributed_family_member_id)
+                )[0],
+                attributed_family_member_type=_family_member_label(
+                    family_members_by_id.get(expense.attributed_family_member_id)
+                )[1],
+            )
+            for expense in new_drafts
+        ],
         needs_clarification=parsed.needs_clarification,
         clarification_questions=parsed.clarification_questions,
     )
@@ -400,6 +530,11 @@ async def confirm_expenses(
     session: AsyncSession = Depends(get_session),
 ) -> ExpenseConfirmResponse:
     idempotency_key = payload.idempotency_key.strip()
+    await ensure_linked_family_members_for_household(
+        session,
+        household_id=user.household_id,
+    )
+    default_member_id = await resolve_default_family_member_id_for_user(session, user=user)
 
     replay_result = await session.execute(
         select(Expense)
@@ -412,10 +547,27 @@ async def confirm_expenses(
     )
     replay_expenses = replay_result.scalars().all()
     if replay_expenses:
+        replay_member_ids = {
+            expense.attributed_family_member_id
+            for expense in replay_expenses
+            if expense.attributed_family_member_id is not None
+        }
+        replay_members_by_id = await _resolve_family_members_by_id(session, replay_member_ids)
         return ExpenseConfirmResponse(
             confirmed_count=len(replay_expenses),
             idempotent_replay=True,
-            expenses=[_to_expense_draft(expense) for expense in replay_expenses],
+            expenses=[
+                _to_expense_draft(
+                    expense,
+                    attributed_family_member_name=_family_member_label(
+                        replay_members_by_id.get(expense.attributed_family_member_id)
+                    )[0],
+                    attributed_family_member_type=_family_member_label(
+                        replay_members_by_id.get(expense.attributed_family_member_id)
+                    )[1],
+                )
+                for expense in replay_expenses
+            ],
             warnings=[],
         )
 
@@ -480,6 +632,31 @@ async def confirm_expenses(
                 ) from exc
         if update.is_recurring is not None:
             expense.is_recurring = update.is_recurring
+        if "attributed_family_member_id" in update.model_fields_set:
+            member_uuid = _parse_optional_member_uuid(
+                update.attributed_family_member_id,
+                field_name=f"attributed_family_member_id for draft_id '{update.draft_id}'",
+            )
+            if member_uuid:
+                member = await get_family_member_by_id(
+                    session,
+                    household_id=user.household_id,
+                    family_member_id=member_uuid,
+                    active_only=True,
+                )
+                if not member:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            "attributed_family_member_id for "
+                            f"draft_id '{update.draft_id}' must be an active family profile."
+                        ),
+                    )
+                expense.attributed_family_member_id = member.id
+            else:
+                expense.attributed_family_member_id = default_member_id
+        elif expense.attributed_family_member_id is None:
+            expense.attributed_family_member_id = default_member_id
 
         resolved_category, resolved_subcategory, warnings = _normalize_taxonomy_selection(
             category=expense.category,
@@ -514,11 +691,28 @@ async def confirm_expenses(
         .order_by(Expense.created_at)
     )
     confirmed_expenses = confirmed_result.scalars().all()
+    confirmed_member_ids = {
+        expense.attributed_family_member_id
+        for expense in confirmed_expenses
+        if expense.attributed_family_member_id is not None
+    }
+    confirmed_members_by_id = await _resolve_family_members_by_id(session, confirmed_member_ids)
 
     return ExpenseConfirmResponse(
         confirmed_count=len(confirmed_expenses),
         idempotent_replay=False,
-        expenses=[_to_expense_draft(expense) for expense in confirmed_expenses],
+        expenses=[
+            _to_expense_draft(
+                expense,
+                attributed_family_member_name=_family_member_label(
+                    confirmed_members_by_id.get(expense.attributed_family_member_id)
+                )[0],
+                attributed_family_member_type=_family_member_label(
+                    confirmed_members_by_id.get(expense.attributed_family_member_id)
+                )[1],
+            )
+            for expense in confirmed_expenses
+        ],
         warnings=normalization_warnings,
     )
 
@@ -533,6 +727,10 @@ async def create_recurring_expense(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> RecurringExpenseCreateResponse:
+    await ensure_linked_family_members_for_household(
+        session,
+        household_id=user.household_id,
+    )
     cleaned_currency = payload.currency.strip().upper()
     if not cleaned_currency:
         raise HTTPException(
@@ -550,11 +748,21 @@ async def create_recurring_expense(
         category_lookup=category_lookup,
         subcategory_lookup=subcategory_lookup,
     )
+    attributed_member_uuid = _parse_optional_member_uuid(
+        payload.attributed_family_member_id,
+        field_name="attributed_family_member_id",
+    )
+    attributed_member_id = await _resolve_expense_attributed_member_id(
+        session,
+        user=user,
+        attributed_family_member_id=attributed_member_uuid,
+    )
 
     now = datetime.now(UTC).replace(tzinfo=None)
     expense = Expense(
         household_id=user.household_id,
         logged_by_user_id=user.id,
+        attributed_family_member_id=attributed_member_id,
         amount=payload.amount,
         currency=cleaned_currency,
         category=resolved_category,
@@ -571,9 +779,21 @@ async def create_recurring_expense(
     session.add(expense)
     await session.commit()
     await session.refresh(expense)
+    attributed_member = await get_family_member_by_id(
+        session,
+        household_id=user.household_id,
+        family_member_id=attributed_member_id,
+        active_only=False,
+    )
+    attributed_name, attributed_type = _family_member_label(attributed_member)
 
     return RecurringExpenseCreateResponse(
-        item=_to_expense_feed_item(expense, user.full_name),
+        item=_to_expense_feed_item(
+            expense,
+            user.full_name,
+            attributed_family_member_name=attributed_name,
+            attributed_family_member_type=attributed_type,
+        ),
         message="Recurring expense added successfully.",
         warnings=warnings,
     )
@@ -590,6 +810,10 @@ async def list_expenses(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ExpenseFeedResponse:
+    await ensure_linked_family_members_for_household(
+        session,
+        household_id=user.household_id,
+    )
     filters = _build_expense_filters(
         user.household_id,
         status_filter,
@@ -606,6 +830,17 @@ async def list_expenses(
 
     user_ids = {expense.logged_by_user_id for expense in expenses}
     user_names = await _resolve_user_names(session, user_ids)
+    member_ids = {
+        expense.attributed_family_member_id
+        for expense in expenses
+        if expense.attributed_family_member_id is not None
+    }
+    members_by_id = await _resolve_family_members_by_id(session, member_ids)
+    members_by_user = await _resolve_family_members_by_linked_user(
+        session,
+        user.household_id,
+        user_ids,
+    )
 
     total_result = await session.execute(
         select(func.count())
@@ -614,16 +849,25 @@ async def list_expenses(
     )
     total_count = int(total_result.scalar_one() or 0)
 
-    return ExpenseFeedResponse(
-        items=[
+    items: list[ExpenseFeedItem] = []
+    for expense in expenses:
+        attributed_member = members_by_id.get(expense.attributed_family_member_id)
+        if attributed_member is None:
+            attributed_member = members_by_user.get(expense.logged_by_user_id)
+        attributed_name, attributed_type = _family_member_label(attributed_member)
+        if not attributed_name:
+            attributed_name = user_names.get(expense.logged_by_user_id, "Unknown")
+            attributed_type = "adult"
+        items.append(
             _to_expense_feed_item(
                 expense,
                 user_names.get(expense.logged_by_user_id, "Unknown"),
+                attributed_family_member_name=attributed_name,
+                attributed_family_member_type=attributed_type,
             )
-            for expense in expenses
-        ],
-        total_count=total_count,
-    )
+        )
+
+    return ExpenseFeedResponse(items=items, total_count=total_count)
 
 
 @router.get("/export.csv")
@@ -636,6 +880,10 @@ async def export_expenses_csv(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
+    await ensure_linked_family_members_for_household(
+        session,
+        household_id=user.household_id,
+    )
     filters = _build_expense_filters(
         user.household_id,
         status_filter,
@@ -651,6 +899,17 @@ async def export_expenses_csv(
         session,
         {expense.logged_by_user_id for expense in expenses},
     )
+    member_ids = {
+        expense.attributed_family_member_id
+        for expense in expenses
+        if expense.attributed_family_member_id is not None
+    }
+    members_by_id = await _resolve_family_members_by_id(session, member_ids)
+    members_by_user = await _resolve_family_members_by_linked_user(
+        session,
+        user.household_id,
+        {expense.logged_by_user_id for expense in expenses},
+    )
 
     csv_buffer = io.StringIO(newline="")
     writer = csv.writer(csv_buffer)
@@ -659,6 +918,7 @@ async def export_expenses_csv(
             "expense_id",
             "date_incurred",
             "logged_by",
+            "belongs_to",
             "status",
             "category",
             "subcategory",
@@ -674,11 +934,20 @@ async def export_expenses_csv(
     )
 
     for expense in expenses:
+        attributed_member = members_by_id.get(expense.attributed_family_member_id)
+        if attributed_member is None:
+            attributed_member = members_by_user.get(expense.logged_by_user_id)
+        attributed_name = (
+            attributed_member.full_name
+            if attributed_member
+            else user_names.get(expense.logged_by_user_id, "Unknown")
+        )
         writer.writerow(
             [
                 str(expense.id),
                 str(expense.date_incurred),
                 user_names.get(expense.logged_by_user_id, "Unknown"),
+                attributed_name,
                 expense.status.value,
                 expense.category or "",
                 expense.subcategory or "",
@@ -709,6 +978,10 @@ async def update_expense(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ExpenseUpdateResponse:
+    await ensure_linked_family_members_for_household(
+        session,
+        household_id=user.household_id,
+    )
     try:
         expense_uuid = UUID(expense_id)
     except ValueError as exc:
@@ -764,6 +1037,21 @@ async def update_expense(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid date_incurred",
             ) from exc
+    if "attributed_family_member_id" in payload.model_fields_set:
+        member_uuid = _parse_optional_member_uuid(
+            payload.attributed_family_member_id,
+            field_name="attributed_family_member_id",
+        )
+        expense.attributed_family_member_id = await _resolve_expense_attributed_member_id(
+            session,
+            user=user,
+            attributed_family_member_id=member_uuid,
+        )
+    elif expense.attributed_family_member_id is None:
+        expense.attributed_family_member_id = await resolve_default_family_member_id_for_user(
+            session,
+            user=user,
+        )
 
     category_lookup, subcategory_lookup = await _load_taxonomy_lookup(session, user.household_id)
     if "other" not in category_lookup:
@@ -790,10 +1078,31 @@ async def update_expense(
     await session.refresh(expense)
 
     user_names = await _resolve_user_names(session, {expense.logged_by_user_id})
+    attributed_member = None
+    if expense.attributed_family_member_id is not None:
+        attributed_member = await get_family_member_by_id(
+            session,
+            household_id=user.household_id,
+            family_member_id=expense.attributed_family_member_id,
+            active_only=False,
+        )
+    if attributed_member is None:
+        linked_members = await _resolve_family_members_by_linked_user(
+            session,
+            user.household_id,
+            {expense.logged_by_user_id},
+        )
+        attributed_member = linked_members.get(expense.logged_by_user_id)
+    attributed_name, attributed_type = _family_member_label(attributed_member)
+    if not attributed_name:
+        attributed_name = user_names.get(expense.logged_by_user_id, "Unknown")
+        attributed_type = "adult"
     return ExpenseUpdateResponse(
         item=_to_expense_feed_item(
             expense,
             user_names.get(expense.logged_by_user_id, "Unknown"),
+            attributed_family_member_name=attributed_name,
+            attributed_family_member_type=attributed_type,
         ),
         message="Expense updated successfully.",
         warnings=warnings,
@@ -807,6 +1116,10 @@ async def update_expense_recurring(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ExpenseRecurringUpdateResponse:
+    await ensure_linked_family_members_for_household(
+        session,
+        household_id=user.household_id,
+    )
     try:
         expense_uuid = UUID(expense_id)
     except ValueError as exc:
@@ -841,6 +1154,25 @@ async def update_expense_recurring(
     await session.refresh(expense)
 
     user_names = await _resolve_user_names(session, {expense.logged_by_user_id})
+    attributed_member = None
+    if expense.attributed_family_member_id is not None:
+        attributed_member = await get_family_member_by_id(
+            session,
+            household_id=user.household_id,
+            family_member_id=expense.attributed_family_member_id,
+            active_only=False,
+        )
+    if attributed_member is None:
+        linked_members = await _resolve_family_members_by_linked_user(
+            session,
+            user.household_id,
+            {expense.logged_by_user_id},
+        )
+        attributed_member = linked_members.get(expense.logged_by_user_id)
+    attributed_name, attributed_type = _family_member_label(attributed_member)
+    if not attributed_name:
+        attributed_name = user_names.get(expense.logged_by_user_id, "Unknown")
+        attributed_type = "adult"
     message = (
         "Expense marked as recurring."
         if payload.is_recurring
@@ -850,6 +1182,8 @@ async def update_expense_recurring(
         item=_to_expense_feed_item(
             expense,
             user_names.get(expense.logged_by_user_id, "Unknown"),
+            attributed_family_member_name=attributed_name,
+            attributed_family_member_type=attributed_type,
         ),
         message=message,
     )
@@ -903,6 +1237,10 @@ async def get_expense_dashboard(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ExpenseDashboardResponse:
+    await ensure_linked_family_members_for_household(
+        session,
+        household_id=user.household_id,
+    )
     today = datetime.now(UTC).date()
     period_start = _first_day_of_month(today)
     period_end = _last_day_of_month(today)
@@ -933,6 +1271,17 @@ async def get_expense_dashboard(
     if user_ids:
         users_result = await session.execute(select(User).where(User.id.in_(list(user_ids))))
         user_names = {member.id: member.full_name for member in users_result.scalars().all()}
+    period_member_ids = {
+        expense.attributed_family_member_id
+        for expense in period_expenses
+        if expense.attributed_family_member_id is not None
+    }
+    members_by_id = await _resolve_family_members_by_id(session, period_member_ids)
+    members_by_user = await _resolve_family_members_by_linked_user(
+        session,
+        user.household_id,
+        user_ids,
+    )
 
     total_spend = 0.0
     expense_count = 0
@@ -941,6 +1290,9 @@ async def get_expense_dashboard(
     category_counts: dict[str, int] = defaultdict(int)
     user_totals: dict[UUID, float] = defaultdict(float)
     user_counts: dict[UUID, int] = defaultdict(int)
+    family_member_totals: dict[str, float] = defaultdict(float)
+    family_member_counts: dict[str, int] = defaultdict(int)
+    family_member_meta: dict[str, tuple[str | None, str, str | None]] = {}
 
     for expense in period_expenses:
         if expense.amount is None:
@@ -958,6 +1310,31 @@ async def get_expense_dashboard(
 
         user_totals[expense.logged_by_user_id] += amount
         user_counts[expense.logged_by_user_id] += 1
+
+        attributed_member = members_by_id.get(expense.attributed_family_member_id)
+        if attributed_member is None:
+            attributed_member = members_by_user.get(expense.logged_by_user_id)
+        if attributed_member:
+            key = f"family:{attributed_member.id}"
+            member_type = (
+                attributed_member.member_type.value
+                if hasattr(attributed_member.member_type, "value")
+                else str(attributed_member.member_type)
+            )
+            family_member_meta[key] = (
+                str(attributed_member.id),
+                attributed_member.full_name,
+                member_type,
+            )
+        else:
+            key = f"user:{expense.logged_by_user_id}"
+            family_member_meta[key] = (
+                None,
+                user_names.get(expense.logged_by_user_id, "Unknown"),
+                "adult",
+            )
+        family_member_totals[key] += amount
+        family_member_counts[key] += 1
 
     monthly_totals: dict[str, float] = defaultdict(float)
     for expense in trend_expenses:
@@ -995,6 +1372,20 @@ async def get_expense_dashboard(
             reverse=True,
         )
     ]
+    family_member_split = [
+        DashboardFamilyMemberPoint(
+            family_member_id=family_member_meta[key][0],
+            family_member_name=family_member_meta[key][1],
+            member_type=family_member_meta[key][2],
+            total=round(total, 2),
+            count=family_member_counts[key],
+        )
+        for key, total in sorted(
+            family_member_totals.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    ]
 
     monthly_trend: list[DashboardMonthlyPoint] = []
     for offset in range(months_back):
@@ -1016,5 +1407,6 @@ async def get_expense_dashboard(
         daily_burn=daily_burn,
         category_split=category_split,
         user_split=user_split,
+        family_member_split=family_member_split,
         monthly_trend=monthly_trend,
     )

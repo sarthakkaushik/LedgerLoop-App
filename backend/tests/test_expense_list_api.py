@@ -165,6 +165,7 @@ async def test_expense_list_is_household_scoped_with_logged_by(client: AsyncClie
         assert "admin.list" in names
         assert "spouse" in names
         assert "other.list" not in names
+        assert all(item["attributed_family_member_name"] for item in payload["items"])
         assert all(item["status"] == "confirmed" for item in payload["items"])
     finally:
         app.dependency_overrides.pop(get_expense_parser, None)

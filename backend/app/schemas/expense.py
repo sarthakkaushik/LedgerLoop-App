@@ -14,6 +14,9 @@ class ExpenseAudioTranscriptionResponse(BaseModel):
 
 class ExpenseDraft(BaseModel):
     id: str | None = None
+    attributed_family_member_id: str | None = None
+    attributed_family_member_name: str | None = None
+    attributed_family_member_type: str | None = None
     amount: float | None = None
     currency: str | None = None
     category: str | None = None
@@ -35,6 +38,7 @@ class ExpenseLogResponse(BaseModel):
 
 class ExpenseConfirmEdit(BaseModel):
     draft_id: str = Field(min_length=1)
+    attributed_family_member_id: str | None = None
     amount: float | None = Field(default=None, gt=0)
     currency: str | None = None
     category: str | None = None
@@ -59,6 +63,9 @@ class ExpenseConfirmResponse(BaseModel):
 
 class ExpenseFeedItem(BaseModel):
     id: str
+    attributed_family_member_id: str | None = None
+    attributed_family_member_name: str | None = None
+    attributed_family_member_type: str | None = None
     amount: float | None = None
     currency: str
     category: str | None = None
@@ -85,6 +92,7 @@ class ExpenseDeleteResponse(BaseModel):
 
 
 class ExpenseUpdateRequest(BaseModel):
+    attributed_family_member_id: str | None = None
     amount: float | None = Field(default=None, gt=0)
     currency: str | None = Field(default=None, min_length=1, max_length=8)
     category: str | None = Field(default=None, max_length=80)
@@ -110,6 +118,7 @@ class ExpenseRecurringUpdateResponse(BaseModel):
 
 
 class RecurringExpenseCreateRequest(BaseModel):
+    attributed_family_member_id: str | None = None
     amount: float = Field(gt=0)
     currency: str = Field(min_length=1, max_length=8, default="INR")
     category: str | None = None
@@ -143,6 +152,14 @@ class DashboardUserPoint(BaseModel):
     count: int
 
 
+class DashboardFamilyMemberPoint(BaseModel):
+    family_member_id: str | None = None
+    family_member_name: str
+    member_type: str | None = None
+    total: float
+    count: int
+
+
 class DashboardMonthlyPoint(BaseModel):
     month: str
     total: float
@@ -157,4 +174,5 @@ class ExpenseDashboardResponse(BaseModel):
     daily_burn: list[DashboardDailyPoint]
     category_split: list[DashboardCategoryPoint]
     user_split: list[DashboardUserPoint]
+    family_member_split: list[DashboardFamilyMemberPoint] = Field(default_factory=list)
     monthly_trend: list[DashboardMonthlyPoint]

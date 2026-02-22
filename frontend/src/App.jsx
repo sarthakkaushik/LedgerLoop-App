@@ -6,17 +6,20 @@ import {
   askAnalysis,
   confirmExpenses,
   createRecurringExpense,
+  createFamilyMember,
   createTaxonomyCategory,
   createTaxonomySubcategory,
   createInviteCode,
   deleteTaxonomyCategory,
   deleteTaxonomySubcategory,
   deleteExpense,
+  deleteFamilyMemberProfile,
   updateExpense,
   deleteHouseholdMember,
   downloadExpenseCsv,
   fetchDashboard,
   fetchExpenseFeed,
+  fetchFamilyMembers,
   fetchHousehold,
   fetchTaxonomy,
   joinHousehold,
@@ -26,6 +29,7 @@ import {
   transcribeExpenseAudio,
   updateHouseholdBudget,
   updateHouseholdName,
+  updateFamilyMember,
   updateExpenseRecurring,
   updateTaxonomyCategory,
   updateTaxonomySubcategory,
@@ -149,6 +153,37 @@ function normalizeTaxonomyName(value) {
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
+}
+
+function normalizeMemberType(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "adult" || normalized === "child" || normalized === "other") {
+    return normalized;
+  }
+  return "other";
+}
+
+function getDefaultFamilyMemberId(familyMembers, user) {
+  if (!Array.isArray(familyMembers) || familyMembers.length === 0) return "";
+  const currentUserId = String(user?.id || "").trim();
+  if (currentUserId) {
+    const linked = familyMembers.find((member) => String(member?.linked_user_id || "") === currentUserId);
+    if (linked?.id) return String(linked.id);
+  }
+  const firstAdult = familyMembers.find((member) => normalizeMemberType(member?.member_type) === "adult");
+  if (firstAdult?.id) return String(firstAdult.id);
+  return String(familyMembers[0]?.id || "");
+}
+
+function resolveFamilyMemberNameById(familyMembers, memberId) {
+  const target = String(memberId || "").trim();
+  if (!target) return "";
+  const match = (Array.isArray(familyMembers) ? familyMembers : []).find(
+    (member) => String(member?.id || "") === target
+  );
+  return String(match?.full_name || "").trim();
 }
 
 function todayIsoDate() {
@@ -873,6 +908,7 @@ function ExpenseAssistantResponse({ result, compact = false, showMode = false })
 function QuickAddModal({
   open,
   token,
+  user,
   onClose,
   onRouteToCapture,
   onNotify,
@@ -887,6 +923,9 @@ function QuickAddModal({
   const [taxonomy, setTaxonomy] = useState({ categories: [] });
   const [taxonomyLoading, setTaxonomyLoading] = useState(false);
   const [taxonomyError, setTaxonomyError] = useState("");
+  const [familyMembers, setFamilyMembers] = useState([]);
+  const [familyLoading, setFamilyLoading] = useState(false);
+  const [familyError, setFamilyError] = useState("");
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
 
   const taxonomyCategories = useMemo(
@@ -919,25 +958,34 @@ function QuickAddModal({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    async function loadTaxonomy() {
+    async function loadModalData() {
       setTaxonomyLoading(true);
       setTaxonomyError("");
+      setFamilyLoading(true);
+      setFamilyError("");
       try {
-        const data = await fetchTaxonomy(token);
+        const [taxonomyData, familyData] = await Promise.all([
+          fetchTaxonomy(token),
+          fetchFamilyMembers(token),
+        ]);
         if (!cancelled) {
-          setTaxonomy(data);
+          setTaxonomy(taxonomyData);
+          setFamilyMembers(Array.isArray(familyData?.items) ? familyData.items : []);
         }
       } catch (err) {
         if (!cancelled) {
-          setTaxonomyError(err.message);
+          const message = String(err?.message || "Could not load family profile options.");
+          setTaxonomyError(message);
+          setFamilyError(message);
         }
       } finally {
         if (!cancelled) {
           setTaxonomyLoading(false);
+          setFamilyLoading(false);
         }
       }
     }
-    loadTaxonomy();
+    loadModalData();
     return () => {
       cancelled = true;
     };
@@ -954,6 +1002,17 @@ function QuickAddModal({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open, loading, confirming, quickAddVoiceTranscribing, quickAddVoiceRecording, text, drafts, result]);
+
+  useEffect(() => {
+    if (!open || !defaultFamilyMemberId) return;
+    setDrafts((previous) =>
+      previous.map((draft) => ({
+        ...draft,
+        attributed_family_member_id:
+          String(draft?.attributed_family_member_id || "").trim() || defaultFamilyMemberId,
+      }))
+    );
+  }, [defaultFamilyMemberId, open]);
 
   function resetModalState() {
     quickAddVoice.cancelRecording();
@@ -1008,7 +1067,13 @@ function QuickAddModal({
     try {
       const parsed = await parseExpenseText(token, text);
       setResult(parsed);
-      setDrafts(parsed.expenses ?? []);
+      setDrafts(
+        (parsed.expenses ?? []).map((draft) => ({
+          ...draft,
+          attributed_family_member_id:
+            String(draft?.attributed_family_member_id || "").trim() || defaultFamilyMemberId,
+        }))
+      );
       setConfirmKey(buildIdempotencyKey());
     } catch (err) {
       setError(err.message);
@@ -1035,6 +1100,8 @@ function QuickAddModal({
         idempotency_key: idempotencyKey,
         expenses: confirmable.map((draft) => ({
           draft_id: draft.id,
+          attributed_family_member_id:
+            String(draft.attributed_family_member_id || "").trim() || defaultFamilyMemberId || null,
           amount:
             draft.amount === "" || draft.amount === null || draft.amount === undefined
               ? null
@@ -1115,7 +1182,9 @@ function QuickAddModal({
           </div>
 
           {taxonomyLoading && <p className="hint subtle-loader">Loading category options...</p>}
+          {familyLoading && <p className="hint subtle-loader">Loading family profiles...</p>}
           {taxonomyError && <p className="form-error">{taxonomyError}</p>}
+          {familyError && !taxonomyError && <p className="form-error">{familyError}</p>}
           {error && <p className="form-error">{error}</p>}
           <div className="stack">
             <div className="voice-textarea-wrap">
@@ -1225,6 +1294,27 @@ function QuickAddModal({
                           {getSubcategoryOptions(draft.category).map((subcategory) => (
                             <option key={`${draft.category}-${subcategory}`} value={subcategory}>
                               {subcategory}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Belongs To
+                        <select
+                          value={draft.attributed_family_member_id || defaultFamilyMemberId || ""}
+                          onChange={(e) =>
+                            updateDraft(index, "attributed_family_member_id", e.target.value)
+                          }
+                          disabled={activeFamilyMembers.length === 0}
+                        >
+                          <option value="">
+                            {activeFamilyMembers.length === 0
+                              ? "No active profile"
+                              : "Select family member"}
+                          </option>
+                          {activeFamilyMembers.map((member) => (
+                            <option key={`quick-add-member-${member.id}`} value={member.id}>
+                              {member.full_name} ({normalizeMemberType(member.member_type)})
                             </option>
                           ))}
                         </select>
@@ -1520,7 +1610,7 @@ function AuthCard({ onAuthSuccess }) {
   );
 }
 
-function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
+function ExpenseLogPanel({ token, user, prefilledText, onPrefilledTextConsumed }) {
   const [text, setText] = useState("");
   const [result, setResult] = useState(null);
   const [drafts, setDrafts] = useState([]);
@@ -1532,28 +1622,40 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
   const [taxonomy, setTaxonomy] = useState({ categories: [] });
   const [taxonomyLoading, setTaxonomyLoading] = useState(false);
   const [taxonomyError, setTaxonomyError] = useState("");
+  const [familyMembers, setFamilyMembers] = useState([]);
+  const [familyLoading, setFamilyLoading] = useState(false);
+  const [familyError, setFamilyError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    async function loadTaxonomy() {
+    async function loadCaptureContext() {
       setTaxonomyLoading(true);
       setTaxonomyError("");
+      setFamilyLoading(true);
+      setFamilyError("");
       try {
-        const data = await fetchTaxonomy(token);
+        const [taxonomyData, familyData] = await Promise.all([
+          fetchTaxonomy(token),
+          fetchFamilyMembers(token),
+        ]);
         if (!cancelled) {
-          setTaxonomy(data);
+          setTaxonomy(taxonomyData);
+          setFamilyMembers(Array.isArray(familyData?.items) ? familyData.items : []);
         }
       } catch (err) {
         if (!cancelled) {
-          setTaxonomyError(err.message);
+          const message = String(err?.message || "Could not load family profile options.");
+          setTaxonomyError(message);
+          setFamilyError(message);
         }
       } finally {
         if (!cancelled) {
           setTaxonomyLoading(false);
+          setFamilyLoading(false);
         }
       }
     }
-    loadTaxonomy();
+    loadCaptureContext();
     return () => {
       cancelled = true;
     };
@@ -1572,6 +1674,17 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
       onPrefilledTextConsumed();
     }
   }, [prefilledText]);
+
+  useEffect(() => {
+    if (!defaultFamilyMemberId) return;
+    setDrafts((previous) =>
+      previous.map((draft) => ({
+        ...draft,
+        attributed_family_member_id:
+          String(draft?.attributed_family_member_id || "").trim() || defaultFamilyMemberId,
+      }))
+    );
+  }, [defaultFamilyMemberId]);
 
   const taxonomyCategories = useMemo(
     () => (Array.isArray(taxonomy?.categories) ? taxonomy.categories : []),
@@ -1608,7 +1721,13 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
     try {
       const parsed = await parseExpenseText(token, text);
       setResult(parsed);
-      setDrafts(parsed.expenses ?? []);
+      setDrafts(
+        (parsed.expenses ?? []).map((draft) => ({
+          ...draft,
+          attributed_family_member_id:
+            String(draft?.attributed_family_member_id || "").trim() || defaultFamilyMemberId,
+        }))
+      );
       setConfirmKey(buildIdempotencyKey());
     } catch (err) {
       setError(err.message);
@@ -1668,6 +1787,8 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
         idempotency_key: idempotencyKey,
         expenses: confirmable.map((draft) => ({
           draft_id: draft.id,
+          attributed_family_member_id:
+            String(draft.attributed_family_member_id || "").trim() || defaultFamilyMemberId || null,
           amount:
             draft.amount === "" || draft.amount === null || draft.amount === undefined
               ? null
@@ -1696,7 +1817,9 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
         Describe spending naturally and we'll turn it into expense drafts you can edit before saving.
       </p>
       {taxonomyLoading && <p className="hint">Loading household taxonomy...</p>}
+      {familyLoading && <p className="hint">Loading family profiles...</p>}
       {taxonomyError && <p className="form-error">{taxonomyError}</p>}
+      {familyError && !taxonomyError && <p className="form-error">{familyError}</p>}
       <div className="stack">
         <div className="voice-textarea-wrap">
           <textarea
@@ -1790,6 +1913,23 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
                   </select>
                 </label>
                 <label>
+                  Belongs To
+                  <select
+                    value={draft.attributed_family_member_id || defaultFamilyMemberId || ""}
+                    onChange={(e) => updateDraft(idx, "attributed_family_member_id", e.target.value)}
+                    disabled={activeFamilyMembers.length === 0}
+                  >
+                    <option value="">
+                      {activeFamilyMembers.length === 0 ? "No active profile" : "Select family member"}
+                    </option>
+                    {activeFamilyMembers.map((member) => (
+                      <option key={`capture-member-${member.id}`} value={member.id}>
+                        {member.full_name} ({normalizeMemberType(member.member_type)})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
                   Date
                   <input
                     type="date"
@@ -1846,9 +1986,15 @@ function ExpenseLogPanel({ token, prefilledText, onPrefilledTextConsumed }) {
 function HouseholdPanel({ token, user }) {
   const [household, setHousehold] = useState(null);
   const [feed, setFeed] = useState(null);
+  const [familyMembers, setFamilyMembers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [deletingMemberId, setDeletingMemberId] = useState(null);
+  const [savingFamily, setSavingFamily] = useState(false);
+  const [editingFamilyId, setEditingFamilyId] = useState("");
+  const [editingFamilyDraft, setEditingFamilyDraft] = useState({ full_name: "", member_type: "other" });
+  const [deactivatingFamilyId, setDeactivatingFamilyId] = useState(null);
+  const [newFamilyProfile, setNewFamilyProfile] = useState({ full_name: "", member_type: "child" });
   const [memberToRemove, setMemberToRemove] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -1857,12 +2003,14 @@ function HouseholdPanel({ token, user }) {
     setLoading(true);
     setError("");
     try {
-      const [householdData, feedData] = await Promise.all([
+      const [householdData, feedData, familyData] = await Promise.all([
         fetchHousehold(token),
         fetchExpenseFeed(token, { status: "confirmed", limit: 100 }),
+        fetchFamilyMembers(token),
       ]);
       setHousehold(householdData);
       setFeed(feedData);
+      setFamilyMembers(Array.isArray(familyData?.items) ? familyData.items : []);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1878,10 +2026,11 @@ function HouseholdPanel({ token, user }) {
     if (!feed?.items?.length) return [];
     const map = new Map();
     for (const item of feed.items) {
-      const current = map.get(item.logged_by_name) || { count: 0, total: 0 };
+      const ownerName = String(item.attributed_family_member_name || item.logged_by_name || "Unknown").trim();
+      const current = map.get(ownerName) || { count: 0, total: 0 };
       current.count += 1;
       current.total += Number(item.amount || 0);
-      map.set(item.logged_by_name, current);
+      map.set(ownerName, current);
     }
     return Array.from(map.entries())
       .map(([name, value]) => ({
@@ -1933,7 +2082,7 @@ function HouseholdPanel({ token, user }) {
         </button>
       </div>
       <p className="hint">
-        Invite members and manage access. Everyone in this household can see who logged each expense.
+        Invite household users, create family profiles, and attribute spending to the right person.
       </p>
 
       {loading && <PanelSkeleton rows={6} />}
@@ -2013,7 +2162,155 @@ function HouseholdPanel({ token, user }) {
             </article>
 
             <article className="result-card">
-              <h3>Spend by Person</h3>
+              <h3>Family Profiles</h3>
+              <p className="hint">
+                Use profiles to tag who each expense belongs to (for example: husband, wife, child).
+              </p>
+              <div className="family-profile-create">
+                <label>
+                  Name
+                  <input
+                    value={newFamilyProfile.full_name}
+                    onChange={(e) =>
+                      setNewFamilyProfile((previous) => ({ ...previous, full_name: e.target.value }))
+                    }
+                    placeholder="e.g. Aarav"
+                    disabled={savingFamily}
+                  />
+                </label>
+                <label>
+                  Type
+                  <select
+                    value={newFamilyProfile.member_type}
+                    onChange={(e) =>
+                      setNewFamilyProfile((previous) => ({ ...previous, member_type: e.target.value }))
+                    }
+                    disabled={savingFamily}
+                  >
+                    <option value="adult">Adult</option>
+                    <option value="child">Child</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <button
+                  className="btn-main"
+                  type="button"
+                  onClick={handleCreateFamilyProfile}
+                  disabled={savingFamily}
+                >
+                  {savingFamily ? "Saving..." : "Add Profile"}
+                </button>
+              </div>
+              <div className="member-list">
+                {familyMembers.length === 0 ? (
+                  <p className="hint">No family profiles yet.</p>
+                ) : (
+                  familyMembers.map((member) => {
+                    const isEditing = editingFamilyId === member.id;
+                    const isLinkedToCurrentUser = String(member.linked_user_id || "") === String(user?.id || "");
+                    return (
+                      <div className="member-row" key={`family-${member.id}`}>
+                        <div>
+                          {isEditing ? (
+                            <>
+                              <input
+                                value={editingFamilyDraft.full_name}
+                                onChange={(e) =>
+                                  setEditingFamilyDraft((previous) => ({
+                                    ...previous,
+                                    full_name: e.target.value,
+                                  }))
+                                }
+                                disabled={savingFamily}
+                              />
+                              <label className="member-inline-select">
+                                Type
+                                <select
+                                  value={editingFamilyDraft.member_type}
+                                  onChange={(e) =>
+                                    setEditingFamilyDraft((previous) => ({
+                                      ...previous,
+                                      member_type: e.target.value,
+                                    }))
+                                  }
+                                  disabled={savingFamily}
+                                >
+                                  <option value="adult">Adult</option>
+                                  <option value="child">Child</option>
+                                  <option value="other">Other</option>
+                                </select>
+                              </label>
+                            </>
+                          ) : (
+                            <>
+                              <strong>{member.full_name}</strong>
+                              <p className="hint">
+                                {normalizeMemberType(member.member_type)}
+                                {member.linked_user_name ? ` | linked to ${member.linked_user_name}` : ""}
+                              </p>
+                            </>
+                          )}
+                        </div>
+                        <div className="member-actions">
+                          {!isEditing ? (
+                            <>
+                              <span className="tool-chip">{normalizeMemberType(member.member_type)}</span>
+                              <button
+                                className="btn-ghost"
+                                type="button"
+                                onClick={() => handleStartFamilyEdit(member)}
+                                disabled={savingFamily}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                className="btn-danger"
+                                type="button"
+                                onClick={() => void handleDeactivateFamilyProfile(member)}
+                                disabled={
+                                  deactivatingFamilyId === member.id ||
+                                  savingFamily ||
+                                  isLinkedToCurrentUser
+                                }
+                                title={
+                                  isLinkedToCurrentUser
+                                    ? "You cannot deactivate your own linked profile."
+                                    : "Deactivate family profile"
+                                }
+                              >
+                                {deactivatingFamilyId === member.id ? "Removing..." : "Deactivate"}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                className="btn-main"
+                                type="button"
+                                onClick={() => void handleSaveFamilyProfileEdit(member.id)}
+                                disabled={savingFamily}
+                              >
+                                {savingFamily ? "Saving..." : "Save"}
+                              </button>
+                              <button
+                                className="btn-ghost"
+                                type="button"
+                                onClick={handleCancelFamilyEdit}
+                                disabled={savingFamily}
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </article>
+
+            <article className="result-card">
+              <h3>Spend by Family Profile</h3>
               {userBoard.length === 0 ? (
                 <p>No confirmed entries yet.</p>
               ) : (
@@ -2060,6 +2357,8 @@ function RecurringPanel({ token, user }) {
   const [feed, setFeed] = useState(null);
   const [taxonomy, setTaxonomy] = useState({ categories: [] });
   const [taxonomyError, setTaxonomyError] = useState("");
+  const [familyMembers, setFamilyMembers] = useState([]);
+  const [familyError, setFamilyError] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingExpenseId, setDeletingExpenseId] = useState(null);
@@ -2070,6 +2369,7 @@ function RecurringPanel({ token, user }) {
   const [form, setForm] = useState({
     amount: "",
     currency: "INR",
+    attributed_family_member_id: "",
     category: "",
     subcategory: "",
     description: "",
@@ -2083,6 +2383,14 @@ function RecurringPanel({ token, user }) {
   const taxonomyCategoryOptions = useMemo(
     () => taxonomyCategories.map((category) => category.name),
     [taxonomyCategories]
+  );
+  const activeFamilyMembers = useMemo(
+    () => (Array.isArray(familyMembers) ? familyMembers.filter((member) => member?.is_active !== false) : []),
+    [familyMembers]
+  );
+  const defaultFamilyMemberId = useMemo(
+    () => getDefaultFamilyMemberId(activeFamilyMembers, user),
+    [activeFamilyMembers, user]
   );
 
   function getSubcategoryOptions(categoryName) {
@@ -2102,23 +2410,113 @@ function RecurringPanel({ token, user }) {
         .then((data) => ({ data, error: "" }))
         .catch((err) => ({
           data: { categories: [] },
-          error: String(err?.message || "Could not load taxonomy options."),
+            error: String(err?.message || "Could not load taxonomy options."),
         }));
-      const [data, taxonomyResult] = await Promise.all([
+      const familyPromise = fetchFamilyMembers(token)
+        .then((data) => ({ data, error: "" }))
+        .catch((err) => ({
+          data: { items: [] },
+          error: String(err?.message || "Could not load family profile options."),
+        }));
+      const [data, taxonomyResult, familyResult] = await Promise.all([
         fetchExpenseFeed(token, {
           status: "confirmed",
           limit: 300,
           recurringOnly: true,
         }),
         taxonomyPromise,
+        familyPromise,
       ]);
       setFeed(data);
       setTaxonomy(taxonomyResult.data);
       setTaxonomyError(taxonomyResult.error);
+      setFamilyMembers(Array.isArray(familyResult?.data?.items) ? familyResult.data.items : []);
+      setFamilyError(familyResult.error || "");
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  function handleStartFamilyEdit(member) {
+    setEditingFamilyId(member.id);
+    setEditingFamilyDraft({
+      full_name: String(member?.full_name || ""),
+      member_type: normalizeMemberType(member?.member_type),
+    });
+  }
+
+  function handleCancelFamilyEdit() {
+    if (savingFamily) return;
+    setEditingFamilyId("");
+    setEditingFamilyDraft({ full_name: "", member_type: "other" });
+  }
+
+  async function handleCreateFamilyProfile() {
+    const name = String(newFamilyProfile.full_name || "").trim();
+    if (!name) {
+      setError("Enter a family member name.");
+      return;
+    }
+    setSavingFamily(true);
+    setError("");
+    setMessage("");
+    try {
+      const created = await createFamilyMember(token, {
+        full_name: name,
+        member_type: normalizeMemberType(newFamilyProfile.member_type),
+      });
+      setMessage(`Family profile added for ${created.full_name}.`);
+      setNewFamilyProfile({ full_name: "", member_type: "child" });
+      await loadPeopleData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingFamily(false);
+    }
+  }
+
+  async function handleSaveFamilyProfileEdit(memberId) {
+    const name = String(editingFamilyDraft.full_name || "").trim();
+    if (!name) {
+      setError("Enter a valid family profile name.");
+      return;
+    }
+    setSavingFamily(true);
+    setError("");
+    setMessage("");
+    try {
+      const updated = await updateFamilyMember(token, memberId, {
+        full_name: name,
+        member_type: normalizeMemberType(editingFamilyDraft.member_type),
+      });
+      setMessage(`Family profile updated for ${updated.full_name}.`);
+      handleCancelFamilyEdit();
+      await loadPeopleData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingFamily(false);
+    }
+  }
+
+  async function handleDeactivateFamilyProfile(member) {
+    if (!member?.id) return;
+    setDeactivatingFamilyId(member.id);
+    setError("");
+    setMessage("");
+    try {
+      const data = await deleteFamilyMemberProfile(token, member.id);
+      setMessage(data.message || "Family profile removed.");
+      if (editingFamilyId === member.id) {
+        handleCancelFamilyEdit();
+      }
+      await loadPeopleData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeactivatingFamilyId(null);
     }
   }
 
@@ -2133,6 +2531,24 @@ function RecurringPanel({ token, user }) {
     }, 2800);
     return () => clearTimeout(timer);
   }, [message]);
+
+  useEffect(() => {
+    if (!defaultFamilyMemberId || !expenseToEdit) return;
+    setExpenseEditDraft((previous) => ({
+      ...previous,
+      attributed_family_member_id:
+        String(previous?.attributed_family_member_id || "").trim() || defaultFamilyMemberId,
+    }));
+  }, [defaultFamilyMemberId, expenseToEdit]);
+
+  useEffect(() => {
+    if (!defaultFamilyMemberId) return;
+    setForm((previous) => ({
+      ...previous,
+      attributed_family_member_id:
+        String(previous?.attributed_family_member_id || "").trim() || defaultFamilyMemberId,
+    }));
+  }, [defaultFamilyMemberId]);
 
   function updateForm(field, value) {
     setForm((prev) => {
@@ -2168,6 +2584,8 @@ function RecurringPanel({ token, user }) {
       const data = await createRecurringExpense(token, {
         amount,
         currency: String(form.currency || "").trim().toUpperCase() || "INR",
+        attributed_family_member_id:
+          String(form.attributed_family_member_id || "").trim() || defaultFamilyMemberId || null,
         category: form.category || null,
         subcategory: form.subcategory || null,
         description: form.description || null,
@@ -2182,6 +2600,7 @@ function RecurringPanel({ token, user }) {
         description: "",
         merchant_or_item: "",
         date_incurred: todayIsoDate(),
+        attributed_family_member_id: defaultFamilyMemberId || "",
       }));
       await loadRecurringData();
     } catch (err) {
@@ -2218,6 +2637,7 @@ function RecurringPanel({ token, user }) {
       <p className="hint">Track monthly bills like rent, school fees, subscriptions, and other repeat spends.</p>
       {error && <p className="form-error">{error}</p>}
       {taxonomyError && <p className="hint">{taxonomyError}</p>}
+      {familyError && <p className="hint">{familyError}</p>}
       {warnings.length > 0 && (
         <ul className="taxonomy-warnings">
           {warnings.map((warning, index) => (
@@ -2252,6 +2672,23 @@ function RecurringPanel({ token, user }) {
               onChange={(e) => updateForm("currency", e.target.value.toUpperCase())}
               placeholder="INR"
             />
+          </label>
+          <label>
+            Belongs To
+            <select
+              value={form.attributed_family_member_id || defaultFamilyMemberId || ""}
+              onChange={(e) => updateForm("attributed_family_member_id", e.target.value)}
+              disabled={activeFamilyMembers.length === 0}
+            >
+              <option value="">
+                {activeFamilyMembers.length === 0 ? "No active profile" : "Select family member"}
+              </option>
+              {activeFamilyMembers.map((member) => (
+                <option key={`recurring-member-${member.id}`} value={member.id}>
+                  {member.full_name} ({normalizeMemberType(member.member_type)})
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             Date
@@ -2345,6 +2782,7 @@ function RecurringPanel({ token, user }) {
                     <tr>
                       <th>Date</th>
                       <th>Logged By</th>
+                      <th>Belongs To</th>
                       <th>Category</th>
                       <th>Description</th>
                       <th>Amount</th>
@@ -2359,6 +2797,7 @@ function RecurringPanel({ token, user }) {
                         <tr key={item.id}>
                           <td>{formatDateValue(item.date_incurred)}</td>
                           <td>{item.logged_by_name}</td>
+                          <td>{item.attributed_family_member_name || item.logged_by_name}</td>
                           <td>{item.category || "Other"}</td>
                           <td>{item.description || item.merchant_or_item || "-"}</td>
                           <td>{formatCurrencyValue(item.amount, item.currency)}</td>
@@ -2396,6 +2835,12 @@ function RecurringPanel({ token, user }) {
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Logged By</span>
                         <span className="mobile-data-value">{item.logged_by_name}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Belongs To</span>
+                        <span className="mobile-data-value">
+                          {item.attributed_family_member_name || item.logged_by_name}
+                        </span>
                       </div>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Category</span>
@@ -2463,6 +2908,8 @@ function LedgerPanel({ token, user, onOpenSettings }) {
   const [totalBudget, setTotalBudget] = useState(DEFAULT_MONTHLY_BUDGET);
   const [taxonomy, setTaxonomy] = useState({ categories: [] });
   const [taxonomyError, setTaxonomyError] = useState("");
+  const [familyMembers, setFamilyMembers] = useState([]);
+  const [familyError, setFamilyError] = useState("");
   const [loading, setLoading] = useState(false);
   const [deletingExpenseId, setDeletingExpenseId] = useState(null);
   const [updatingRecurringId, setUpdatingRecurringId] = useState(null);
@@ -2473,6 +2920,7 @@ function LedgerPanel({ token, user, onOpenSettings }) {
     date_incurred: "",
     amount: "",
     currency: "INR",
+    attributed_family_member_id: "",
     category: "",
     subcategory: "",
     description: "",
@@ -2488,6 +2936,14 @@ function LedgerPanel({ token, user, onOpenSettings }) {
   const taxonomyCategoryOptions = useMemo(
     () => taxonomyCategories.map((category) => category.name),
     [taxonomyCategories]
+  );
+  const activeFamilyMembers = useMemo(
+    () => (Array.isArray(familyMembers) ? familyMembers.filter((member) => member?.is_active !== false) : []),
+    [familyMembers]
+  );
+  const defaultFamilyMemberId = useMemo(
+    () => getDefaultFamilyMemberId(activeFamilyMembers, user),
+    [activeFamilyMembers, user]
   );
   const budgetCurrency = useMemo(() => {
     const item = Array.isArray(feed?.items) ? feed.items.find((entry) => String(entry?.currency || "").trim()) : null;
@@ -2525,18 +2981,27 @@ function LedgerPanel({ token, user, onOpenSettings }) {
         .then((data) => ({ data, error: "" }))
         .catch((err) => ({
           data: { categories: [] },
-          error: String(err?.message || "Could not load taxonomy options."),
+            error: String(err?.message || "Could not load taxonomy options."),
+        }));
+      const familyPromise = fetchFamilyMembers(token)
+        .then((data) => ({ data, error: "" }))
+        .catch((err) => ({
+          data: { items: [] },
+          error: String(err?.message || "Could not load family profile options."),
         }));
 
-      const [feedData, dashboardData, householdData, taxonomyResult] = await Promise.all([
+      const [feedData, dashboardData, householdData, taxonomyResult, familyResult] = await Promise.all([
         fetchExpenseFeed(token, { status: statusFilter, limit: 200 }),
         fetchDashboard(token, 6).catch(() => null),
         fetchHousehold(token).catch(() => null),
         taxonomyPromise,
+        familyPromise,
       ]);
       setFeed(feedData);
       setTaxonomy(taxonomyResult.data);
       setTaxonomyError(taxonomyResult.error);
+      setFamilyMembers(Array.isArray(familyResult?.data?.items) ? familyResult.data.items : []);
+      setFamilyError(familyResult.error || "");
       const budgetNumeric = parseNumeric(householdData?.monthly_budget);
       setTotalBudget(budgetNumeric !== null && budgetNumeric > 0 ? Number(budgetNumeric.toFixed(2)) : DEFAULT_MONTHLY_BUDGET);
       if (dashboardData) {
@@ -2613,6 +3078,8 @@ function LedgerPanel({ token, user, onOpenSettings }) {
       date_incurred: String(item?.date_incurred || todayIsoDate()),
       amount: item?.amount === null || item?.amount === undefined ? "" : String(item.amount),
       currency: String(item?.currency || "INR").toUpperCase(),
+      attributed_family_member_id:
+        String(item?.attributed_family_member_id || "").trim() || defaultFamilyMemberId,
       category: String(item?.category || ""),
       subcategory: String(item?.subcategory || ""),
       description: String(item?.description || item?.merchant_or_item || ""),
@@ -2678,6 +3145,8 @@ function LedgerPanel({ token, user, onOpenSettings }) {
       const payload = {
         amount: Number(amountNumeric.toFixed(2)),
         currency,
+        attributed_family_member_id:
+          String(expenseEditDraft.attributed_family_member_id || "").trim() || defaultFamilyMemberId || null,
         category: String(expenseEditDraft.category || "").trim(),
         subcategory: String(expenseEditDraft.subcategory || "").trim(),
         description: String(expenseEditDraft.description || "").trim(),
@@ -2712,6 +3181,7 @@ function LedgerPanel({ token, user, onOpenSettings }) {
         onEditBudget={onOpenSettings}
       />
       {error && <p className="form-error">{error}</p>}
+      {familyError && <p className="hint">{familyError}</p>}
 
       {loading ? (
         <PanelSkeleton rows={7} />
@@ -2761,6 +3231,7 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                     <tr>
                       <th>Date</th>
                       <th>Logged By</th>
+                      <th>Belongs To</th>
                       <th>Category</th>
                       <th>Subcategory</th>
                       <th>Description</th>
@@ -2795,6 +3266,31 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                           </td>
                           <td>
                             <span className={isEditing ? "ledger-inline-loggedby" : ""}>{item.logged_by_name}</span>
+                          </td>
+                          <td>
+                            {isEditing ? (
+                              <select
+                                className="ledger-inline-select"
+                                value={expenseEditDraft.attributed_family_member_id || defaultFamilyMemberId || ""}
+                                onChange={(e) =>
+                                  updateExpenseEditField("attributed_family_member_id", e.target.value)
+                                }
+                                disabled={rowBusy || activeFamilyMembers.length === 0}
+                              >
+                                <option value="">
+                                  {activeFamilyMembers.length === 0
+                                    ? "No active profile"
+                                    : "Select family member"}
+                                </option>
+                                {activeFamilyMembers.map((member) => (
+                                  <option key={`ledger-member-${member.id}`} value={member.id}>
+                                    {member.full_name} ({normalizeMemberType(member.member_type)})
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              item.attributed_family_member_name || item.logged_by_name
+                            )}
                           </td>
                           <td>
                             {isEditing ? (
@@ -2925,6 +3421,9 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                                 </button>
                                 {editError && <p className="form-error ledger-inline-error">{editError}</p>}
                                 {taxonomyError && <p className="hint ledger-inline-hint">{taxonomyError}</p>}
+                                {familyError && !taxonomyError && (
+                                  <p className="hint ledger-inline-hint">{familyError}</p>
+                                )}
                               </div>
                             ) : (
                               <div className="table-row-actions">
@@ -2981,6 +3480,27 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                             <span className="mobile-data-label">Logged By</span>
                             <span className="mobile-data-value ledger-inline-loggedby">{item.logged_by_name}</span>
                           </div>
+                          <label className="ledger-inline-mobile-field">
+                            Belongs To
+                            <select
+                              value={expenseEditDraft.attributed_family_member_id || defaultFamilyMemberId || ""}
+                              onChange={(e) =>
+                                updateExpenseEditField("attributed_family_member_id", e.target.value)
+                              }
+                              disabled={rowBusy || activeFamilyMembers.length === 0}
+                            >
+                              <option value="">
+                                {activeFamilyMembers.length === 0
+                                  ? "No active profile"
+                                  : "Select family member"}
+                              </option>
+                              {activeFamilyMembers.map((member) => (
+                                <option key={`mobile-ledger-member-${member.id}`} value={member.id}>
+                                  {member.full_name} ({normalizeMemberType(member.member_type)})
+                                </option>
+                              ))}
+                            </select>
+                          </label>
                           <label className="ledger-inline-mobile-field">
                             Date
                             <input
@@ -3091,6 +3611,9 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                           </div>
                           {editError && <p className="form-error ledger-inline-error">{editError}</p>}
                           {taxonomyError && <p className="hint ledger-inline-hint">{taxonomyError}</p>}
+                          {familyError && !taxonomyError && (
+                            <p className="hint ledger-inline-hint">{familyError}</p>
+                          )}
                         </div>
                       </article>
                     );
@@ -3104,6 +3627,12 @@ function LedgerPanel({ token, user, onOpenSettings }) {
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Logged By</span>
                         <span className="mobile-data-value">{item.logged_by_name}</span>
+                      </div>
+                      <div className="mobile-data-row">
+                        <span className="mobile-data-label">Belongs To</span>
+                        <span className="mobile-data-value">
+                          {item.attributed_family_member_name || item.logged_by_name}
+                        </span>
                       </div>
                       <div className="mobile-data-row">
                         <span className="mobile-data-label">Category</span>
@@ -4060,10 +4589,28 @@ function DashboardPanel({ token, embedded = false }) {
     return Math.max(...dashboard.category_split.map((item) => item.total), 1);
   }, [dashboard]);
 
-  const maxUserTotal = useMemo(() => {
-    if (!dashboard?.user_split?.length) return 1;
-    return Math.max(...dashboard.user_split.map((item) => item.total), 1);
+  const personSplit = useMemo(() => {
+    if (Array.isArray(dashboard?.family_member_split) && dashboard.family_member_split.length) {
+      return dashboard.family_member_split.map((item) => ({
+        id: String(item.family_member_id || item.family_member_name || ""),
+        name: String(item.family_member_name || "Unknown"),
+        total: Number(item.total || 0),
+      }));
+    }
+    if (Array.isArray(dashboard?.user_split) && dashboard.user_split.length) {
+      return dashboard.user_split.map((item) => ({
+        id: String(item.user_id || item.user_name || ""),
+        name: String(item.user_name || "Unknown"),
+        total: Number(item.total || 0),
+      }));
+    }
+    return [];
   }, [dashboard]);
+
+  const maxUserTotal = useMemo(() => {
+    if (!personSplit.length) return 1;
+    return Math.max(...personSplit.map((item) => item.total), 1);
+  }, [personSplit]);
 
   const periodStart = String(dashboard?.period_start || "").trim();
   const periodEnd = String(dashboard?.period_end || "").trim();
@@ -4527,9 +5074,9 @@ function DashboardPanel({ token, embedded = false }) {
               </article>
 
               <article className="result-card insights-result-card insights-card-person">
-                <h3>Spending by Person</h3>
-                {dashboard.user_split.length === 0 ? (
-                  <p>No user data yet.</p>
+                <h3>Spending by Family Member</h3>
+                {personSplit.length === 0 ? (
+                  <p>No family-member data yet.</p>
                 ) : (
                   <div className="insights-person-chart">
                     <div className="insights-person-y-axis">
@@ -4554,8 +5101,8 @@ function DashboardPanel({ token, embedded = false }) {
                       ))}
 
                       <div className="insights-person-bars">
-                        {dashboard.user_split.map((item, index) => (
-                          <article className="insights-person-bar" key={item.user_id}>
+                        {personSplit.map((item, index) => (
+                          <article className="insights-person-bar" key={item.id || index}>
                             <div className="insights-person-bar-track">
                               <div
                                 className="insights-person-bar-fill"
@@ -4565,7 +5112,7 @@ function DashboardPanel({ token, embedded = false }) {
                                 }}
                               />
                             </div>
-                            <p className="insights-person-bar-name">{item.user_name}</p>
+                            <p className="insights-person-bar-name">{item.name}</p>
                             <p className="insights-person-bar-value">
                               {formatCompactCurrencyValue(item.total, dashboardCurrency)}
                             </p>
@@ -4647,7 +5194,9 @@ function DashboardPanel({ token, embedded = false }) {
                                           <p className="category-expense-meta">
                                             {formatDateValue(expense.date_incurred)}
                                             {expense.subcategory ? ` | ${expense.subcategory}` : ""}
-                                            {expense.logged_by_name ? ` | ${expense.logged_by_name}` : ""}
+                                            {(expense.attributed_family_member_name || expense.logged_by_name)
+                                              ? ` | ${expense.attributed_family_member_name || expense.logged_by_name}`
+                                              : ""}
                                           </p>
                                         </div>
                                         <strong className="category-expense-amount">
@@ -5247,6 +5796,7 @@ export default function App() {
             {activeTab === "capture" && (
               <ExpenseLogPanel
                 token={auth.token}
+                user={auth.user}
                 prefilledText={capturePrefillText}
                 onPrefilledTextConsumed={() => setCapturePrefillText("")}
               />
@@ -5282,6 +5832,7 @@ export default function App() {
         <QuickAddModal
           open={quickAddOpen}
           token={auth.token}
+          user={auth.user}
           onClose={() => setQuickAddOpen(false)}
           onRouteToCapture={(text) => {
             setCapturePrefillText(text);

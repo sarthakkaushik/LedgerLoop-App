@@ -128,6 +128,38 @@ export async function deleteHouseholdMember(token, memberId) {
   return apiRequest(`/auth/members/${memberId}`, { method: "DELETE", token });
 }
 
+export async function fetchFamilyMembers(token, { includeInactive = false } = {}) {
+  const search = new URLSearchParams();
+  if (includeInactive) {
+    search.set("include_inactive", "true");
+  }
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return apiRequest(`/family-members${suffix}`, { token });
+}
+
+export async function createFamilyMember(token, payload) {
+  return apiRequest("/family-members", {
+    method: "POST",
+    token,
+    body: payload,
+  });
+}
+
+export async function updateFamilyMember(token, familyMemberId, payload) {
+  return apiRequest(`/family-members/${familyMemberId}`, {
+    method: "PATCH",
+    token,
+    body: payload,
+  });
+}
+
+export async function deleteFamilyMemberProfile(token, familyMemberId) {
+  return apiRequest(`/family-members/${familyMemberId}`, {
+    method: "DELETE",
+    token,
+  });
+}
+
 export async function parseExpenseText(token, text) {
   return apiRequest("/expenses/log", {
     method: "POST",

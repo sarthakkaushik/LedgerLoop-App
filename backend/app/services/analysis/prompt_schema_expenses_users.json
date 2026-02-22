@@ -6,6 +6,9 @@
       {"name": "household_id", "type": "text", "nullable": false},
       {"name": "logged_by_user_id", "type": "text", "nullable": false},
       {"name": "logged_by", "type": "text", "nullable": false},
+      {"name": "attributed_family_member_id", "type": "text", "nullable": true},
+      {"name": "attributed_family_member", "type": "text", "nullable": false},
+      {"name": "attributed_member_type", "type": "text", "nullable": true},
       {"name": "status", "type": "text", "nullable": false},
       {"name": "category", "type": "text", "nullable": false},
       {"name": "subcategory", "type": "text", "nullable": true},
@@ -21,7 +24,8 @@
     ],
     "notes": [
       "Rows are already filtered to the authenticated household.",
-      "Use logged_by for person-level questions.",
+      "Use attributed_family_member for 'spent on/for person' questions.",
+      "Use logged_by for 'who logged' audit questions.",
       "Use both category and subcategory when subcategory intent is present.",
       "For free text, search description and merchant_or_item together."
     ]

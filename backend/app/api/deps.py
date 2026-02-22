@@ -9,6 +9,7 @@ from sqlmodel import select
 
 from app.core.db import get_session
 from app.models.expense import Expense
+from app.models.family_member import FamilyMember
 from app.core.security import decode_access_token
 from app.models.user import User, UserRole
 from app.services.llm.base import ExpenseParserProvider
@@ -17,6 +18,7 @@ from app.services.llm.settings_service import (
     get_env_runtime_config,
 )
 from app.services.taxonomy_service import build_household_taxonomy_map
+from app.services.family_member_service import ensure_linked_family_members_for_household
 from app.services.llm.types import ParseContext
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
@@ -71,6 +73,10 @@ async def get_llm_parse_context(
     session: AsyncSession = Depends(get_session),
 ) -> ParseContext:
     runtime = get_env_runtime_config()
+    await ensure_linked_family_members_for_household(
+        session,
+        household_id=user.household_id,
+    )
     categories, taxonomy = await build_household_taxonomy_map(
         session,
         household_id=user.household_id,
@@ -94,20 +100,31 @@ async def get_llm_parse_context(
             categories.append("Other")
         taxonomy = {category: [] for category in categories}
 
-    member_result = await session.execute(
+    profile_result = await session.execute(
+        select(FamilyMember.full_name).where(
+            FamilyMember.household_id == user.household_id,
+            FamilyMember.is_active.is_(True),
+        )
+    )
+    profile_members = {
+        str(value).strip()
+        for value in profile_result.scalars().all()
+        if value and str(value).strip()
+    }
+
+    user_result = await session.execute(
         select(User.full_name).where(
             User.household_id == user.household_id,
             User.is_active == True,  # noqa: E712
         )
     )
+    user_members = {
+        str(value).strip()
+        for value in user_result.scalars().all()
+        if value and str(value).strip()
+    }
 
-    members = sorted(
-        {
-            str(value).strip()
-            for value in member_result.scalars().all()
-            if value and str(value).strip()
-        }
-    )[:30]
+    members = sorted(profile_members | user_members)[:40]
 
     return ParseContext(
         reference_date=_today_for_timezone(runtime.timezone),
