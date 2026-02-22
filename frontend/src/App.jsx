@@ -4533,6 +4533,7 @@ function DashboardPanel({ token, embedded = false }) {
   const [categoryFeedLoading, setCategoryFeedLoading] = useState(false);
   const [categoryFeedError, setCategoryFeedError] = useState("");
   const [expandedCategoryKey, setExpandedCategoryKey] = useState("");
+  const [expandedPersonKey, setExpandedPersonKey] = useState("");
   const [activePieSliceKey, setActivePieSliceKey] = useState("");
   const [hoveredPieSliceKey, setHoveredPieSliceKey] = useState("");
   const [loading, setLoading] = useState(false);
@@ -4596,6 +4597,7 @@ function DashboardPanel({ token, embedded = false }) {
 
   useEffect(() => {
     setExpandedCategoryKey("");
+    setExpandedPersonKey("");
     setActivePieSliceKey("");
     setHoveredPieSliceKey("");
   }, [monthsBack, dashboard?.period_month]);
@@ -4611,6 +4613,7 @@ function DashboardPanel({ token, embedded = false }) {
         id: String(item.family_member_id || item.family_member_name || ""),
         name: String(item.family_member_name || "Unknown"),
         total: Number(item.total || 0),
+        count: Number(item.count || 0),
       }));
     }
     if (Array.isArray(dashboard?.user_split) && dashboard.user_split.length) {
@@ -4618,6 +4621,7 @@ function DashboardPanel({ token, embedded = false }) {
         id: String(item.user_id || item.user_name || ""),
         name: String(item.user_name || "Unknown"),
         total: Number(item.total || 0),
+        count: Number(item.count || 0),
       }));
     }
     return [];
@@ -4749,14 +4753,6 @@ function DashboardPanel({ token, embedded = false }) {
     };
   }, [dailySpendSeries, maxDailySpendTotal]);
 
-  const personAxisTicks = useMemo(() => {
-    return Array.from({ length: 5 }, (_, index) => {
-      const ratio = index / 4;
-      const value = maxUserTotal * (1 - ratio);
-      return { ratio, value };
-    });
-  }, [maxUserTotal]);
-
   const categoryPie = useMemo(() => {
     const split = Array.isArray(dashboard?.category_split) ? dashboard.category_split : [];
     const total = split.reduce((sum, item) => sum + Number(item?.total || 0), 0);
@@ -4842,10 +4838,44 @@ function DashboardPanel({ token, embedded = false }) {
     return grouped;
   }, [periodFeedItems]);
 
+  const personEntriesByKey = useMemo(() => {
+    const grouped = new Map();
+    for (const expense of periodFeedItems) {
+      const memberId = String(expense?.attributed_family_member_id || "").trim();
+      const memberLabel = String(
+        expense?.attributed_family_member_name || expense?.logged_by_name || "Unknown"
+      ).trim();
+      const key = memberId || normalizeTaxonomyName(memberLabel) || "unknown";
+      if (!grouped.has(key)) {
+        grouped.set(key, []);
+      }
+      grouped.get(key).push(expense);
+    }
+    for (const entries of grouped.values()) {
+      entries.sort((left, right) => {
+        const leftDate = String(left?.date_incurred || "");
+        const rightDate = String(right?.date_incurred || "");
+        const dateComparison = rightDate.localeCompare(leftDate);
+        if (dateComparison !== 0) return dateComparison;
+        return Number(right?.amount || 0) - Number(left?.amount || 0);
+      });
+    }
+    return grouped;
+  }, [periodFeedItems]);
+
   function handleToggleCategory(categoryName) {
     const key = normalizeTaxonomyName(categoryName || "Other");
     if (!key) return;
     setExpandedCategoryKey((previous) => (previous === key ? "" : key));
+  }
+
+  function handleTogglePerson(person) {
+    const key =
+      String(person?.id || "").trim() ||
+      normalizeTaxonomyName(String(person?.name || "").trim()) ||
+      "";
+    if (!key) return;
+    setExpandedPersonKey((previous) => (previous === key ? "" : key));
   }
 
   return (
@@ -5094,48 +5124,96 @@ function DashboardPanel({ token, embedded = false }) {
                 {personSplit.length === 0 ? (
                   <p>No family-member data yet.</p>
                 ) : (
-                  <div className="insights-person-chart">
-                    <div className="insights-person-y-axis">
-                      {personAxisTicks.map((tick, index) => {
-                        const axisBottom = clampValue((1 - tick.ratio) * 100, 5, 95);
-                        return (
-                          <span key={`person-axis-${index}`} style={{ bottom: `${axisBottom}%` }}>
-                            {formatCompactCurrencyValue(tick.value, dashboardCurrency)}
-                          </span>
-                        );
-                      })}
-                    </div>
+                  <div className="category-split-list insights-category-list insights-person-list">
+                    {personSplit.map((item, index) => {
+                      const personKey =
+                        String(item.id || "").trim() ||
+                        normalizeTaxonomyName(item.name) ||
+                        `person-${index}`;
+                      const isExpanded = expandedPersonKey === personKey;
+                      const personEntries = personEntriesByKey.get(personKey) || [];
+                      const panelId = `person-expense-panel-${index}`;
+                      const hiddenEntriesCount = Math.max(Number(item.count || 0) - personEntries.length, 0);
 
-                    <div className="insights-person-plot">
-                      {personAxisTicks.map((tick, index) => (
-                        <span
-                          key={`person-grid-${index}`}
-                          className="insights-person-grid-line"
-                          style={{ bottom: `${(1 - tick.ratio) * 100}%` }}
-                          aria-hidden="true"
-                        />
-                      ))}
-
-                      <div className="insights-person-bars">
-                        {personSplit.map((item, index) => (
-                          <article className="insights-person-bar" key={item.id || index}>
-                            <div className="insights-person-bar-track">
+                      return (
+                        <article
+                          key={`${personKey}-${index}`}
+                          className={
+                            isExpanded
+                              ? "category-split-item insights-category-item insights-person-item expanded"
+                              : "category-split-item insights-category-item insights-person-item"
+                          }
+                        >
+                          <button
+                            type="button"
+                            className="bar-row insights-bar-row category-bar-button insights-person-toggle"
+                            aria-expanded={isExpanded}
+                            aria-controls={panelId}
+                            onClick={() => handleTogglePerson(item)}
+                          >
+                            <span>{item.name}</span>
+                            <div className="bar-track">
                               <div
-                                className="insights-person-bar-fill"
+                                className="bar-fill accent"
                                 style={{
-                                  height: `${Math.max((item.total / maxUserTotal) * 100, 4)}%`,
+                                  width: `${Math.max((item.total / maxUserTotal) * 100, 2)}%`,
                                   background: INSIGHTS_PERSON_COLORS[index % INSIGHTS_PERSON_COLORS.length],
                                 }}
                               />
                             </div>
-                            <p className="insights-person-bar-name">{item.name}</p>
-                            <p className="insights-person-bar-value">
-                              {formatCompactCurrencyValue(item.total, dashboardCurrency)}
-                            </p>
-                          </article>
-                        ))}
-                      </div>
-                    </div>
+                            <div className="category-bar-tail">
+                              <strong>{formatCurrencyValue(item.total, dashboardCurrency)}</strong>
+                              <span className="category-chevron" aria-hidden="true">
+                                v
+                              </span>
+                            </div>
+                          </button>
+                          {isExpanded && (
+                            <div id={panelId} className="category-expense-panel insights-person-expense-panel">
+                              {categoryFeedLoading ? (
+                                <p className="category-expense-empty">Loading entries...</p>
+                              ) : categoryFeedError ? (
+                                <p className="category-expense-empty">{categoryFeedError}</p>
+                              ) : personEntries.length === 0 ? (
+                                <p className="category-expense-empty">
+                                  No entries found in this month for this family member.
+                                </p>
+                              ) : (
+                                <>
+                                  <ul className="category-expense-list">
+                                    {personEntries.map((expense) => (
+                                      <li className="category-expense-item" key={`person-expense-${personKey}-${expense.id}`}>
+                                        <div>
+                                          <p className="category-expense-title">
+                                            {expense.description ||
+                                              expense.merchant_or_item ||
+                                              "Expense entry"}
+                                          </p>
+                                          <p className="category-expense-meta">
+                                            {formatDateValue(expense.date_incurred)}
+                                            {expense.category ? ` | ${expense.category}` : ""}
+                                            {expense.subcategory ? ` / ${expense.subcategory}` : ""}
+                                            {expense.logged_by_name ? ` | logged by ${expense.logged_by_name}` : ""}
+                                          </p>
+                                        </div>
+                                        <strong className="category-expense-amount">
+                                          {formatCurrencyValue(expense.amount, expense.currency)}
+                                        </strong>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  {hiddenEntriesCount > 0 && (
+                                    <p className="category-expense-footnote">
+                                      Showing {personEntries.length} of {item.count} entries for this family member.
+                                    </p>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
               </article>

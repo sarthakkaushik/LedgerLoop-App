@@ -2338,6 +2338,45 @@ a:focus-visible {
   gap: 10px;
 }
 
+.insights-person-list {
+  gap: 10px;
+}
+
+.insights-person-item {
+  background: #222136;
+  border-color: #34334f;
+}
+
+.insights-person-item.expanded {
+  border-color: #4f4d70;
+  background: #24233a;
+  box-shadow: 0 12px 24px rgba(8, 8, 15, 0.35);
+}
+
+.insights-person-toggle {
+  padding: 9px 10px;
+}
+
+.insights-person-toggle:hover {
+  background: rgba(78, 205, 196, 0.14);
+}
+
+.insights-person-item .bar-track {
+  background: #2e2d42;
+  height: 10px;
+}
+
+.insights-person-item .category-expense-panel {
+  border-top: 1px solid #323149;
+  background: #1b1a2b;
+}
+
+.insights-person-item.expanded .category-chevron {
+  border-color: rgba(78, 205, 196, 0.55);
+  background: rgba(78, 205, 196, 0.18);
+  color: #bafaf5;
+}
+
 .insights-category-item {
   background: #222136;
   border-color: #34334f;
@@ -4786,6 +4825,15 @@ a:focus-visible {
 .app-shell-unified .quick-add-close:hover:not(:disabled) {
   border-color: #5d5a7a;
   background: #2b2a42;
+}
+
+.app-shell-unified .quick-add-modal .draft-header {
+  background: linear-gradient(180deg, #1a1928 76%, rgba(26, 25, 40, 0));
+}
+
+.app-shell-unified .quick-add-modal .draft-header h4 {
+  margin: 0;
+  color: #f7c59f;
 }
 
 .app-shell-unified .auth-card {
