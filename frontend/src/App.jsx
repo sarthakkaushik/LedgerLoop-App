@@ -4845,11 +4845,25 @@ function DashboardPanel({ token, embedded = false }) {
       const memberLabel = String(
         expense?.attributed_family_member_name || expense?.logged_by_name || "Unknown"
       ).trim();
-      const key = memberId || normalizeTaxonomyName(memberLabel) || "unknown";
-      if (!grouped.has(key)) {
-        grouped.set(key, []);
+      const normalizedMemberKey = normalizeTaxonomyName(memberLabel) || "";
+
+      const keys = [];
+      if (memberId) {
+        keys.push(memberId);
       }
-      grouped.get(key).push(expense);
+      if (normalizedMemberKey) {
+        keys.push(normalizedMemberKey);
+      }
+      if (!keys.length) {
+        keys.push("unknown");
+      }
+
+      for (const key of keys) {
+        if (!grouped.has(key)) {
+          grouped.set(key, []);
+        }
+        grouped.get(key).push(expense);
+      }
     }
     for (const entries of grouped.values()) {
       entries.sort((left, right) => {
@@ -5130,8 +5144,25 @@ function DashboardPanel({ token, embedded = false }) {
                         String(item.id || "").trim() ||
                         normalizeTaxonomyName(item.name) ||
                         `person-${index}`;
+                      const normalizedPersonName = normalizeTaxonomyName(item.name);
                       const isExpanded = expandedPersonKey === personKey;
-                      const personEntries = personEntriesByKey.get(personKey) || [];
+                      const entriesById = personEntriesByKey.get(personKey) || [];
+                      const entriesByName = normalizedPersonName
+                        ? personEntriesByKey.get(normalizedPersonName) || []
+                        : [];
+                      const personEntries =
+                        entriesById.length > 0 && entriesByName.length > 0
+                          ? Array.from(
+                              new Map(
+                                [...entriesById, ...entriesByName].map((expense) => [
+                                  String(expense?.id || ""),
+                                  expense,
+                                ])
+                              ).values()
+                            )
+                          : entriesById.length > 0
+                            ? entriesById
+                            : entriesByName;
                       const panelId = `person-expense-panel-${index}`;
                       const hiddenEntriesCount = Math.max(Number(item.count || 0) - personEntries.length, 0);
 
