@@ -3673,14 +3673,17 @@ function SettingsPanel({ token, user, onUserUpdated }) {
                               </button>
                               <button
                                 type="button"
-                                className="btn-danger"
+                                className="icon-delete-button"
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   setDeleteTarget({ type: "category", category });
                                 }}
+                                aria-label={`Delete category ${category.name}`}
+                                title="Delete category"
                                 disabled={taxonomyBusy}
                               >
-                                Delete
+                                <TrashIcon />
+                                <span className="sr-only">Delete category</span>
                               </button>
                             </div>
                             <span
@@ -3757,13 +3760,17 @@ function SettingsPanel({ token, user, onUserUpdated }) {
                                     </button>
                                     <button
                                       type="button"
-                                      className="btn-danger"
-                                      onClick={() =>
+                                      className="icon-delete-button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
                                         setDeleteTarget({ type: "subcategory", category, subcategory })
-                                      }
+                                      }}
+                                      aria-label={`Delete subcategory ${subcategory.name}`}
+                                      title="Delete subcategory"
                                       disabled={taxonomyBusy}
                                     >
-                                      Delete
+                                      <TrashIcon />
+                                      <span className="sr-only">Delete subcategory</span>
                                     </button>
                                   </div>
                                 </>
