@@ -2549,15 +2549,6 @@ function RecurringPanel({ token, user }) {
   }, [message]);
 
   useEffect(() => {
-    if (!defaultFamilyMemberId || !expenseToEdit) return;
-    setExpenseEditDraft((previous) => ({
-      ...previous,
-      attributed_family_member_id:
-        String(previous?.attributed_family_member_id || "").trim() || defaultFamilyMemberId,
-    }));
-  }, [defaultFamilyMemberId, expenseToEdit]);
-
-  useEffect(() => {
     if (!defaultFamilyMemberId) return;
     setForm((previous) => ({
       ...previous,
