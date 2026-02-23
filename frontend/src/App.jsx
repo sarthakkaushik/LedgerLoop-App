@@ -1,9 +1,12 @@
 import { Component, useEffect, useMemo, useRef, useState } from "react";
+import { useAuth, useClerk } from "@clerk/clerk-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import {
   askAnalysis,
+  clerkOnboardingCreate,
+  clerkOnboardingJoin,
   confirmExpenses,
   createRecurringExpense,
   createFamilyMember,
@@ -22,6 +25,7 @@ import {
   fetchFamilyMembers,
   fetchHousehold,
   fetchTaxonomy,
+  exchangeClerkSession,
   joinHousehold,
   loginUser,
   parseExpenseText,
@@ -100,6 +104,16 @@ const initialJoin = {
   full_name: "",
   email: "",
   password: "",
+  invite_code: "",
+};
+
+const initialClerkCreate = {
+  full_name: "",
+  household_name: "",
+};
+
+const initialClerkJoin = {
+  full_name: "",
   invite_code: "",
 };
 
@@ -1382,7 +1396,245 @@ function QuickAddModal({
   );
 }
 
-function AuthCard({ onAuthSuccess }) {
+function ClerkOnboardingCard({ clerkToken, identity, onAuthSuccess }) {
+  const [mode, setMode] = useState("create");
+  const [createForm, setCreateForm] = useState(() => ({
+    ...initialClerkCreate,
+    full_name: String(identity?.full_name || "").trim(),
+  }));
+  const [joinForm, setJoinForm] = useState(() => ({
+    ...initialClerkJoin,
+    full_name: String(identity?.full_name || "").trim(),
+  }));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const suggestedName = String(identity?.full_name || "").trim();
+    if (!suggestedName) return;
+    setCreateForm((previous) =>
+      previous.full_name ? previous : { ...previous, full_name: suggestedName }
+    );
+    setJoinForm((previous) =>
+      previous.full_name ? previous : { ...previous, full_name: suggestedName }
+    );
+  }, [identity?.full_name]);
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const data =
+        mode === "create"
+          ? await clerkOnboardingCreate(clerkToken, {
+              full_name: createForm.full_name,
+              household_name: createForm.household_name,
+            })
+          : await clerkOnboardingJoin(clerkToken, {
+              full_name: joinForm.full_name,
+              invite_code: joinForm.invite_code,
+            });
+      onAuthSuccess({
+        token: data.token.access_token,
+        user: data.user,
+      });
+    } catch (err) {
+      setError(String(err?.message || "Could not finish Clerk onboarding."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="clerk-onboarding">
+      <div className="mode-switch mode-switch-two">
+        <button
+          className={mode === "create" ? "active" : ""}
+          onClick={() => setMode("create")}
+          type="button"
+        >
+          Create Home
+        </button>
+        <button
+          className={mode === "join" ? "active" : ""}
+          onClick={() => setMode("join")}
+          type="button"
+        >
+          Join Home
+        </button>
+      </div>
+      <p className="hint">
+        Signed in as <strong>{identity?.email || "your Clerk account"}</strong>.
+      </p>
+      <form onSubmit={handleSubmit} className="stack">
+        {mode === "create" ? (
+          <>
+            <label>
+              Full Name
+              <input
+                required
+                value={createForm.full_name}
+                onChange={(event) =>
+                  setCreateForm((previous) => ({
+                    ...previous,
+                    full_name: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Household Name
+              <input
+                required
+                value={createForm.household_name}
+                onChange={(event) =>
+                  setCreateForm((previous) => ({
+                    ...previous,
+                    household_name: event.target.value,
+                  }))
+                }
+              />
+            </label>
+          </>
+        ) : (
+          <>
+            <label>
+              Full Name
+              <input
+                required
+                value={joinForm.full_name}
+                onChange={(event) =>
+                  setJoinForm((previous) => ({
+                    ...previous,
+                    full_name: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Invite Code
+              <input
+                required
+                value={joinForm.invite_code}
+                onChange={(event) =>
+                  setJoinForm((previous) => ({
+                    ...previous,
+                    invite_code: event.target.value.toUpperCase(),
+                  }))
+                }
+              />
+            </label>
+          </>
+        )}
+        <button className="btn-main" disabled={loading} type="submit">
+          {loading ? "Please wait..." : mode === "create" ? "Create Household" : "Join Household"}
+        </button>
+        {error && <p className="form-error">{error}</p>}
+      </form>
+    </section>
+  );
+}
+
+function ClerkAuthPanel({ onAuthSuccess }) {
+  const { isSignedIn, getToken } = useAuth();
+  const { openSignIn, openSignUp, signOut } = useClerk();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [clerkToken, setClerkToken] = useState("");
+  const [identity, setIdentity] = useState(null);
+
+  async function handleContinueWithClerk() {
+    setLoading(true);
+    setError("");
+    try {
+      const token = await getToken();
+      if (!token) {
+        throw new Error("No active Clerk session found. Please sign in again.");
+      }
+      const data = await exchangeClerkSession(token);
+      if (data?.status === "linked" && data?.token?.access_token && data?.user) {
+        onAuthSuccess({
+          token: data.token.access_token,
+          user: data.user,
+        });
+        return;
+      }
+      if (data?.status === "needs_onboarding") {
+        setClerkToken(token);
+        setIdentity(data.identity || null);
+        return;
+      }
+      throw new Error("Unexpected response from Clerk exchange endpoint.");
+    } catch (err) {
+      setError(String(err?.message || "Could not continue with Clerk."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleClerkSignOut() {
+    setLoading(true);
+    setError("");
+    try {
+      await signOut();
+      setIdentity(null);
+      setClerkToken("");
+    } catch (err) {
+      setError(String(err?.message || "Could not sign out from Clerk."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="clerk-panel">
+      <h3>Continue With Clerk</h3>
+      {!identity ? (
+        <>
+          <p className="hint">
+            Use Clerk for passwordless + social login. Enable Google in Clerk dashboard to
+            show Google sign-in.
+          </p>
+          {isSignedIn ? (
+            <div className="clerk-actions">
+              <button className="btn-main" disabled={loading} onClick={handleContinueWithClerk} type="button">
+                {loading ? "Checking..." : "Continue As Signed-In Clerk User"}
+              </button>
+              <button className="btn-ghost" disabled={loading} onClick={handleClerkSignOut} type="button">
+                Sign Out Clerk Session
+              </button>
+            </div>
+          ) : (
+            <div className="clerk-actions">
+              <button
+                className="btn-main"
+                disabled={loading}
+                onClick={() => openSignIn()}
+                type="button"
+              >
+                Sign In With Clerk
+              </button>
+              <button
+                className="btn-ghost"
+                disabled={loading}
+                onClick={() => openSignUp()}
+                type="button"
+              >
+                Sign Up With Clerk
+              </button>
+            </div>
+          )}
+        </>
+      ) : (
+        <ClerkOnboardingCard clerkToken={clerkToken} identity={identity} onAuthSuccess={onAuthSuccess} />
+      )}
+      {error && <p className="form-error">{error}</p>}
+    </section>
+  );
+}
+
+function AuthCard({ onAuthSuccess, clerkEnabled = false }) {
   const [mode, setMode] = useState("register");
   const [registerForm, setRegisterForm] = useState(initialRegister);
   const [loginForm, setLoginForm] = useState(initialLogin);
@@ -1613,6 +1865,7 @@ function AuthCard({ onAuthSuccess }) {
           </button>
           {error && <p className="form-error">{error}</p>}
         </form>
+        {clerkEnabled && <ClerkAuthPanel onAuthSuccess={onAuthSuccess} />}
       </div>
     </section>
   );
@@ -5727,7 +5980,7 @@ function InsightsPanel({ token, activeView }) {
   );
 }
 
-export default function App() {
+export default function App({ clerkEnabled = false }) {
   const [auth, setAuth] = useState(() => {
     const token = safeStorageGet("expense_auth_token");
     const userRaw = safeStorageGet("expense_auth_user");
@@ -5836,7 +6089,7 @@ export default function App() {
       <RuntimeErrorBoundary>
         <main className="app-shell app-shell-unified">
           <Header user={null} onLogout={() => {}} />
-          <AuthCard onAuthSuccess={setAuth} />
+          <AuthCard onAuthSuccess={setAuth} clerkEnabled={clerkEnabled} />
         </main>
       </RuntimeErrorBoundary>
     );

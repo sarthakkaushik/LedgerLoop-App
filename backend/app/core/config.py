@@ -32,10 +32,20 @@ class Settings(BaseSettings):
     groq_model: str = "moonshotai/kimi-k2-instruct-0905"
     groq_whisper_model: str = "whisper-large-v3-turbo"
     voice_max_upload_mb: int = 10
+    clerk_enabled: bool = False
+    clerk_issuer: str | None = None
+    clerk_jwks_url: str | None = None
+    clerk_authorized_parties: str = ""
+    clerk_jwt_audience: str | None = None
+    clerk_jwks_cache_ttl_seconds: int = 300
 
     @property
     def cors_origins(self) -> list[str]:
         return [x.strip() for x in self.cors_allow_origins.split(",") if x.strip()]
+
+    @property
+    def clerk_authorized_party_list(self) -> list[str]:
+        return [x.strip() for x in self.clerk_authorized_parties.split(",") if x.strip()]
 
 
 @lru_cache

@@ -23,6 +23,10 @@ class User(SQLModel, table=True):
     email: EmailStr = Field(
         sa_column=Column(String(320), unique=True, index=True, nullable=False)
     )
+    clerk_user_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), unique=True, index=True, nullable=True),
+    )
     hashed_password: str = Field(nullable=False, max_length=255)
     full_name: str = Field(nullable=False, max_length=120)
     household_id: UUID = Field(foreign_key="households.id", nullable=False, index=True)

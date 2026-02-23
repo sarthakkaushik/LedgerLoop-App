@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 import secrets
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -15,6 +15,10 @@ from app.models.household import Household
 from app.models.user import User, UserRole
 from app.schemas.auth import (
     AuthResponse,
+    ClerkExchangeResponse,
+    ClerkIdentityResponse,
+    ClerkOnboardingCreateRequest,
+    ClerkOnboardingJoinRequest,
     DeleteMemberResponse,
     HouseholdBudgetUpdateRequest,
     HouseholdMemberResponse,
@@ -26,6 +30,12 @@ from app.schemas.auth import (
     RegisterRequest,
     TokenResponse,
     UserResponse,
+)
+from app.services.auth.clerk import (
+    ClerkConfigError,
+    ClerkIdentity,
+    ClerkTokenError,
+    verify_clerk_session_token,
 )
 from app.services.taxonomy_service import seed_default_household_taxonomy
 
@@ -84,6 +94,104 @@ async def authenticate_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+def _normalize_email(email: str) -> str:
+    return email.lower().strip()
+
+
+def _extract_bearer_token(authorization: str | None) -> str:
+    header = str(authorization or "").strip()
+    if not header:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header",
+        )
+    parts = header.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Authorization header",
+        )
+    return parts[1].strip()
+
+
+async def _get_clerk_identity(authorization: str | None) -> ClerkIdentity:
+    token = _extract_bearer_token(authorization)
+    try:
+        return await verify_clerk_session_token(token)
+    except ClerkConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except ClerkTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+
+async def _find_user_by_email(session: AsyncSession, email: str) -> User | None:
+    result = await session.execute(select(User).where(User.email == _normalize_email(email)))
+    return result.scalar_one_or_none()
+
+
+async def _find_user_by_clerk_id(
+    session: AsyncSession, clerk_user_id: str
+) -> User | None:
+    result = await session.execute(
+        select(User).where(User.clerk_user_id == clerk_user_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _auth_response_for_user(session: AsyncSession, user: User) -> AuthResponse:
+    token = create_access_token(str(user.id))
+    return AuthResponse(
+        token=TokenResponse(access_token=token),
+        user=await to_user_response(session, user),
+    )
+
+
+def _identity_response(identity: ClerkIdentity) -> ClerkIdentityResponse:
+    return ClerkIdentityResponse(
+        clerk_user_id=identity.clerk_user_id,
+        email=identity.email,
+        full_name=identity.full_name,
+    )
+
+
+async def _link_clerk_identity_to_user(
+    session: AsyncSession,
+    user: User,
+    identity: ClerkIdentity,
+) -> User:
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is deactivated",
+        )
+    if user.clerk_user_id and user.clerk_user_id != identity.clerk_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email is already linked to another Clerk account",
+        )
+    if user.clerk_user_id != identity.clerk_user_id:
+        user.clerk_user_id = identity.clerk_user_id
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+    return user
+
+
+def _require_identity_email(identity: ClerkIdentity) -> str:
+    if not identity.email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Clerk session token does not include an email claim",
+        )
+    return identity.email
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -152,6 +260,166 @@ async def token(
     user = await authenticate_user(session, form_data.username, form_data.password)
     access_token = create_access_token(str(user.id))
     return TokenResponse(access_token=access_token)
+
+
+@router.post("/clerk/exchange", response_model=ClerkExchangeResponse)
+async def clerk_exchange_session(
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> ClerkExchangeResponse:
+    identity = await _get_clerk_identity(authorization)
+
+    user = await _find_user_by_clerk_id(session, identity.clerk_user_id)
+    if user:
+        linked_user = await _link_clerk_identity_to_user(session, user, identity)
+        auth_response = await _auth_response_for_user(session, linked_user)
+        return ClerkExchangeResponse(
+            status="linked",
+            token=auth_response.token,
+            user=auth_response.user,
+        )
+
+    if identity.email:
+        email_user = await _find_user_by_email(session, identity.email)
+        if email_user:
+            linked_user = await _link_clerk_identity_to_user(
+                session, email_user, identity
+            )
+            auth_response = await _auth_response_for_user(session, linked_user)
+            return ClerkExchangeResponse(
+                status="linked",
+                token=auth_response.token,
+                user=auth_response.user,
+            )
+
+    return ClerkExchangeResponse(
+        status="needs_onboarding",
+        identity=_identity_response(identity),
+        message="Create a household or join with an invite code to continue.",
+    )
+
+
+@router.post(
+    "/clerk/onboarding/create",
+    response_model=AuthResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def clerk_onboarding_create_household(
+    payload: ClerkOnboardingCreateRequest,
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> AuthResponse:
+    identity = await _get_clerk_identity(authorization)
+    email = _require_identity_email(identity)
+
+    existing_user = await _find_user_by_clerk_id(session, identity.clerk_user_id)
+    if existing_user:
+        linked_user = await _link_clerk_identity_to_user(session, existing_user, identity)
+        return await _auth_response_for_user(session, linked_user)
+
+    email_user = await _find_user_by_email(session, email)
+    if email_user:
+        linked_user = await _link_clerk_identity_to_user(session, email_user, identity)
+        return await _auth_response_for_user(session, linked_user)
+
+    household_name = payload.household_name.strip()
+    if not household_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Household name cannot be empty",
+        )
+    full_name = payload.full_name.strip()
+    if not full_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Full name cannot be empty",
+        )
+
+    household = Household(
+        name=household_name,
+        invite_code=await generate_unique_invite_code(session),
+    )
+    session.add(household)
+    await session.flush()
+
+    user = User(
+        email=email,
+        clerk_user_id=identity.clerk_user_id,
+        hashed_password=hash_password(secrets.token_urlsafe(32)),
+        full_name=full_name,
+        household_id=household.id,
+        role=UserRole.ADMIN,
+    )
+    session.add(user)
+    await seed_default_household_taxonomy(
+        session,
+        household_id=household.id,
+        created_by_user_id=user.id,
+    )
+    await session.commit()
+    await session.refresh(user)
+
+    return await _auth_response_for_user(session, user)
+
+
+@router.post(
+    "/clerk/onboarding/join",
+    response_model=AuthResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def clerk_onboarding_join_household(
+    payload: ClerkOnboardingJoinRequest,
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> AuthResponse:
+    identity = await _get_clerk_identity(authorization)
+    email = _require_identity_email(identity)
+
+    existing_user = await _find_user_by_clerk_id(session, identity.clerk_user_id)
+    if existing_user:
+        linked_user = await _link_clerk_identity_to_user(session, existing_user, identity)
+        return await _auth_response_for_user(session, linked_user)
+
+    household_result = await session.execute(
+        select(Household).where(Household.invite_code == payload.invite_code.upper().strip())
+    )
+    household = household_result.scalar_one_or_none()
+    if not household:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invalid invite code",
+        )
+
+    email_user = await _find_user_by_email(session, email)
+    if email_user:
+        if email_user.household_id != household.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already belongs to another household",
+            )
+        linked_user = await _link_clerk_identity_to_user(session, email_user, identity)
+        return await _auth_response_for_user(session, linked_user)
+
+    full_name = payload.full_name.strip()
+    if not full_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Full name cannot be empty",
+        )
+
+    user = User(
+        email=email,
+        clerk_user_id=identity.clerk_user_id,
+        hashed_password=hash_password(secrets.token_urlsafe(32)),
+        full_name=full_name,
+        household_id=household.id,
+        role=UserRole.MEMBER,
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+
+    return await _auth_response_for_user(session, user)
 
 
 @router.post("/invite", response_model=InviteResponse)

@@ -12,6 +12,7 @@ The repository contains a FastAPI backend and a React (Vite) frontend.
 - Backend: FastAPI, SQLModel, PostgreSQL/SQLite, uv
 - Frontend: React 18, Vite
 - AI integrations: OpenAI, Cerebras, Gemini, Groq Whisper (configurable)
+- Auth options: built-in JWT auth, optional Clerk token exchange flow
 
 ## Repository Structure
 - `backend/` API, models, services, tests

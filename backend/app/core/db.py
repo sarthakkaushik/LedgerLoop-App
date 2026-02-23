@@ -22,6 +22,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
         await conn.run_sync(_ensure_user_is_active_column)
+        await conn.run_sync(_ensure_user_clerk_id_column)
         await conn.run_sync(_ensure_expense_subcategory_column)
         await conn.run_sync(_ensure_expense_attributed_family_member_column)
         await conn.run_sync(_ensure_household_monthly_budget_column)
@@ -45,6 +46,23 @@ def _ensure_user_is_active_column(sync_conn) -> None:
     else:
         sync_conn.exec_driver_sql(
             "ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"
+        )
+
+
+def _ensure_user_clerk_id_column(sync_conn) -> None:
+    inspector = inspect(sync_conn)
+    table_names = set(inspector.get_table_names())
+    if "users" not in table_names:
+        return
+
+    column_names = {column["name"] for column in inspector.get_columns("users")}
+    if "clerk_user_id" not in column_names:
+        sync_conn.exec_driver_sql("ALTER TABLE users ADD COLUMN clerk_user_id VARCHAR(255)")
+
+    index_names = {index.get("name", "") for index in inspector.get_indexes("users")}
+    if "ix_users_clerk_user_id" not in index_names:
+        sync_conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_clerk_user_id ON users (clerk_user_id)"
         )
 
 

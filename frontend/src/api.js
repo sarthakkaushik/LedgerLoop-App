@@ -38,6 +38,20 @@ export async function apiRequest(path, { method = "GET", token, body } = {}) {
   return parseResponse(res);
 }
 
+async function clerkRequest(path, clerkToken, { method = "POST", body } = {}) {
+  const headers = {};
+  if (clerkToken) headers.Authorization = `Bearer ${clerkToken}`;
+  if (body) {
+    headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch(`${getApiBaseUrl()}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return parseResponse(res);
+}
+
 export async function registerUser(payload) {
   return apiRequest("/auth/register", { method: "POST", body: payload });
 }
@@ -48,6 +62,24 @@ export async function loginUser(payload) {
 
 export async function joinHousehold(payload) {
   return apiRequest("/auth/join", { method: "POST", body: payload });
+}
+
+export async function exchangeClerkSession(clerkToken) {
+  return clerkRequest("/auth/clerk/exchange", clerkToken, { method: "POST" });
+}
+
+export async function clerkOnboardingCreate(clerkToken, payload) {
+  return clerkRequest("/auth/clerk/onboarding/create", clerkToken, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export async function clerkOnboardingJoin(clerkToken, payload) {
+  return clerkRequest("/auth/clerk/onboarding/join", clerkToken, {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export async function createInviteCode(token) {

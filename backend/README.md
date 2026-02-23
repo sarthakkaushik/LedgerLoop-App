@@ -28,6 +28,9 @@ uv run pytest -q
 - `POST /auth/token` (OAuth2 form endpoint for Swagger Authorize)
 - `POST /auth/invite`
 - `POST /auth/join`
+- `POST /auth/clerk/exchange` (verify Clerk session and exchange to app token)
+- `POST /auth/clerk/onboarding/create` (first-time Clerk user creates household)
+- `POST /auth/clerk/onboarding/join` (first-time Clerk user joins via invite code)
 - `GET /auth/me`
 - `GET /auth/household` (household members, and invite code for admin)
 - `POST /expenses/log` (chat-aware parsing + saves draft rows)
@@ -48,3 +51,9 @@ uv run pytest -q
 - Groq mode: set `LLM_PROVIDER=groq`, `GROQ_API_KEY`, and `GROQ_MODEL` (for example `moonshotai/kimi-k2-instruct-0905`).
 - OpenAI mode: set `LLM_PROVIDER=openai` with `OPENAI_API_KEY`; analytics SQL agent uses OpenAI Agents SDK and injects live DB schema into system instructions on each request.
 - Voice transcription: set `GROQ_API_KEY` and optionally `GROQ_WHISPER_MODEL` (default `whisper-large-v3-turbo`) and `VOICE_MAX_UPLOAD_MB` (default `10`).
+
+## Clerk auth mode (optional)
+- Enable with `CLERK_ENABLED=true`.
+- Set `CLERK_ISSUER` to your Clerk JWT issuer URL.
+- Optional overrides: `CLERK_JWKS_URL`, `CLERK_AUTHORIZED_PARTIES` (comma-separated `azp` list), `CLERK_JWT_AUDIENCE`.
+- The exchange/onboarding endpoints require an email claim in the Clerk session token.

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -71,3 +73,27 @@ class HouseholdRenameRequest(BaseModel):
 
 class HouseholdBudgetUpdateRequest(BaseModel):
     monthly_budget: float = Field(gt=0, le=1_000_000_000)
+
+
+class ClerkIdentityResponse(BaseModel):
+    clerk_user_id: str
+    email: str | None = None
+    full_name: str | None = None
+
+
+class ClerkExchangeResponse(BaseModel):
+    status: Literal["linked", "needs_onboarding"]
+    token: TokenResponse | None = None
+    user: UserResponse | None = None
+    identity: ClerkIdentityResponse | None = None
+    message: str | None = None
+
+
+class ClerkOnboardingCreateRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=120)
+    household_name: str = Field(min_length=2, max_length=120)
+
+
+class ClerkOnboardingJoinRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=120)
+    invite_code: str = Field(min_length=6, max_length=32)

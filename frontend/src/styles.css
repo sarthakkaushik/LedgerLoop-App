@@ -429,6 +429,33 @@ code {
   color: #f4fdff;
 }
 
+.mode-switch-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.clerk-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed #d6e6ef;
+  display: grid;
+  gap: 10px;
+}
+
+.clerk-panel h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.clerk-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.clerk-onboarding {
+  display: grid;
+  gap: 10px;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: 1fr;
@@ -4368,6 +4395,10 @@ a:focus-visible {
 
 .app-shell-unified .content-header {
   border-bottom-color: #2f2e45;
+}
+
+.app-shell-unified .clerk-panel {
+  border-top-color: #3a3951;
 }
 
 .app-shell-unified .content-header h1,
