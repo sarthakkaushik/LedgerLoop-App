@@ -4517,9 +4517,67 @@ function describePieSlicePath(centerX, centerY, radius, startAngle, endAngle) {
   return `M ${centerX.toFixed(2)} ${centerY.toFixed(2)} L ${startX.toFixed(2)} ${startY.toFixed(2)} A ${radius.toFixed(2)} ${radius.toFixed(2)} 0 ${largeArc} 1 ${endX.toFixed(2)} ${endY.toFixed(2)} Z`;
 }
 
-function DashboardPanel({ token, embedded = false }) {
+function buildMonthRange(monthKey) {
+  const normalized = String(monthKey || "").trim();
+  const match = normalized.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
+  const monthStart = `${match[1]}-${match[2]}-01`;
+  const monthEndDate = new Date(year, month, 0);
+  const monthEnd = `${match[1]}-${match[2]}-${String(monthEndDate.getDate()).padStart(2, "0")}`;
+  return { start: monthStart, end: monthEnd };
+}
+
+function shiftMonthKey(monthKey, deltaMonths) {
+  const normalized = String(monthKey || "").trim();
+  const match = normalized.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return "";
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const delta = Number(deltaMonths || 0);
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    month < 1 ||
+    month > 12 ||
+    !Number.isFinite(delta)
+  ) {
+    return "";
+  }
+  const shifted = new Date(year, month - 1 + delta, 1);
+  if (Number.isNaN(shifted.getTime())) return "";
+  return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMonthOverMonthDelta(currentValue, previousValue, currencyCode = "INR") {
+  const current = parseNumeric(currentValue) ?? 0;
+  const previous = parseNumeric(previousValue) ?? 0;
+  const diff = current - previous;
+  if (Math.abs(diff) < 0.01) return "No change vs previous month";
+  if (previous <= 0) {
+    if (current <= 0) return "No change vs previous month";
+    return `+${formatCurrencyValue(Math.abs(diff), currencyCode)} vs previous month`;
+  }
+  const percent = (diff / previous) * 100;
+  const diffPrefix = diff > 0 ? "+" : "-";
+  const percentPrefix = percent > 0 ? "+" : "-";
+  return `${diffPrefix}${formatCurrencyValue(Math.abs(diff), currencyCode)} (${percentPrefix}${Math.abs(percent).toFixed(1)}%) vs previous month`;
+}
+
+function DashboardPanel({
+  token,
+  embedded = false,
+  onGoToLedger,
+  onGoToRecurring,
+  onOpenSettings,
+}) {
   const [monthsBack, setMonthsBack] = useState(6);
   const [dashboard, setDashboard] = useState(null);
+  const [totalBudget, setTotalBudget] = useState(DEFAULT_MONTHLY_BUDGET);
   const [categoryFeed, setCategoryFeed] = useState({ items: [], total_count: 0 });
   const [categoryFeedLoading, setCategoryFeedLoading] = useState(false);
   const [categoryFeedError, setCategoryFeedError] = useState("");
@@ -4558,6 +4616,25 @@ function DashboardPanel({ token, embedded = false }) {
 
   useEffect(() => {
     let cancelled = false;
+    async function loadHouseholdBudget() {
+      try {
+        const householdData = await fetchHousehold(token);
+        const budgetNumeric = parseNumeric(householdData?.monthly_budget);
+        if (!cancelled && budgetNumeric !== null && budgetNumeric > 0) {
+          setTotalBudget(Number(budgetNumeric.toFixed(2)));
+        }
+      } catch {
+        // non-blocking: budget card can fall back to default budget
+      }
+    }
+    loadHouseholdBudget();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    let cancelled = false;
     async function loadCategoryFeed() {
       setCategoryFeedLoading(true);
       setCategoryFeedError("");
@@ -4593,12 +4670,83 @@ function DashboardPanel({ token, embedded = false }) {
     setHoveredPieSliceKey("");
   }, [monthsBack, dashboard?.period_month]);
 
-  const maxCategoryTotal = useMemo(() => {
-    if (!dashboard?.category_split?.length) return 1;
-    return Math.max(...dashboard.category_split.map((item) => item.total), 1);
-  }, [dashboard]);
+  const dashboardPeriodMonth = String(dashboard?.period_month || "").trim();
+  const periodStart = String(dashboard?.period_start || "").trim();
+  const periodEnd = String(dashboard?.period_end || "").trim();
 
-  const personSplit = useMemo(() => {
+  const shouldUseFallbackPeriod = useMemo(() => {
+    const totalSpend = Number(dashboard?.total_spend || 0);
+    const expenseCount = Number(dashboard?.expense_count || 0);
+    return totalSpend === 0 && expenseCount === 0;
+  }, [dashboard?.expense_count, dashboard?.total_spend]);
+
+  const fallbackPeriodMonth = useMemo(() => {
+    if (!shouldUseFallbackPeriod) return "";
+    const trend = Array.isArray(dashboard?.monthly_trend) ? dashboard.monthly_trend : [];
+    for (let index = trend.length - 1; index >= 0; index -= 1) {
+      const month = String(trend[index]?.month || "").trim();
+      const total = Number(trend[index]?.total || 0);
+      if (!month || month === dashboardPeriodMonth) continue;
+      if (total > 0) return month;
+    }
+    return "";
+  }, [dashboard?.monthly_trend, dashboardPeriodMonth, shouldUseFallbackPeriod]);
+
+  const effectivePeriodMonth = fallbackPeriodMonth || dashboardPeriodMonth;
+  const effectivePeriodRange = useMemo(() => {
+    const monthRange = buildMonthRange(effectivePeriodMonth);
+    if (monthRange) return monthRange;
+    return {
+      start: periodStart,
+      end: periodEnd,
+    };
+  }, [effectivePeriodMonth, periodEnd, periodStart]);
+  const effectivePeriodStart = String(effectivePeriodRange.start || "").trim();
+  const effectivePeriodEnd = String(effectivePeriodRange.end || "").trim();
+  const usingFallbackPeriod = Boolean(fallbackPeriodMonth && fallbackPeriodMonth !== dashboardPeriodMonth);
+
+  const periodFeedItems = useMemo(() => {
+    if (!effectivePeriodStart || !effectivePeriodEnd) return [];
+    const items = Array.isArray(categoryFeed?.items) ? categoryFeed.items : [];
+    return items.filter((expense) => {
+      const dateIncurred = String(expense?.date_incurred || "").trim();
+      return Boolean(
+        dateIncurred &&
+          dateIncurred >= effectivePeriodStart &&
+          dateIncurred <= effectivePeriodEnd
+      );
+    });
+  }, [categoryFeed?.items, effectivePeriodEnd, effectivePeriodStart]);
+
+  const derivedCategorySplit = useMemo(() => {
+    const totals = new Map();
+    const counts = new Map();
+    for (const expense of periodFeedItems) {
+      const amount = parseNumeric(expense?.amount);
+      if (amount === null) continue;
+      const category = String(expense?.category || "Other").trim() || "Other";
+      totals.set(category, (totals.get(category) || 0) + amount);
+      counts.set(category, (counts.get(category) || 0) + 1);
+    }
+    return Array.from(totals.entries())
+      .map(([category, total]) => ({
+        category,
+        total: Number(total.toFixed(2)),
+        count: counts.get(category) || 0,
+      }))
+      .sort((left, right) => right.total - left.total);
+  }, [periodFeedItems]);
+
+  const dashboardCategorySplit = useMemo(
+    () => (Array.isArray(dashboard?.category_split) ? dashboard.category_split : []),
+    [dashboard?.category_split]
+  );
+
+  const categorySplit = useMemo(() => {
+    return usingFallbackPeriod ? derivedCategorySplit : dashboardCategorySplit;
+  }, [dashboardCategorySplit, derivedCategorySplit, usingFallbackPeriod]);
+
+  const dashboardPersonSplit = useMemo(() => {
     if (Array.isArray(dashboard?.family_member_split) && dashboard.family_member_split.length) {
       return dashboard.family_member_split.map((item) => ({
         id: String(item.family_member_id || item.family_member_name || ""),
@@ -4618,22 +4766,47 @@ function DashboardPanel({ token, embedded = false }) {
     return [];
   }, [dashboard]);
 
+  const derivedPersonSplit = useMemo(() => {
+    const totals = new Map();
+    for (const expense of periodFeedItems) {
+      const amount = parseNumeric(expense?.amount);
+      if (amount === null) continue;
+      const memberId = String(expense?.attributed_family_member_id || "").trim();
+      const memberName =
+        String(expense?.attributed_family_member_name || expense?.logged_by_name || "Unknown").trim() ||
+        "Unknown";
+      const key = memberId || normalizeTaxonomyName(memberName) || "unknown";
+      const existing = totals.get(key);
+      if (existing) {
+        existing.total += amount;
+        existing.count += 1;
+      } else {
+        totals.set(key, {
+          id: memberId || key,
+          name: memberName,
+          total: amount,
+          count: 1,
+        });
+      }
+    }
+    return Array.from(totals.values())
+      .map((item) => ({ ...item, total: Number(item.total.toFixed(2)) }))
+      .sort((left, right) => right.total - left.total);
+  }, [periodFeedItems]);
+
+  const personSplit = useMemo(() => {
+    return usingFallbackPeriod ? derivedPersonSplit : dashboardPersonSplit;
+  }, [dashboardPersonSplit, derivedPersonSplit, usingFallbackPeriod]);
+
+  const maxCategoryTotal = useMemo(() => {
+    if (!categorySplit.length) return 1;
+    return Math.max(...categorySplit.map((item) => Number(item?.total || 0)), 1);
+  }, [categorySplit]);
+
   const maxUserTotal = useMemo(() => {
     if (!personSplit.length) return 1;
     return Math.max(...personSplit.map((item) => item.total), 1);
   }, [personSplit]);
-
-  const periodStart = String(dashboard?.period_start || "").trim();
-  const periodEnd = String(dashboard?.period_end || "").trim();
-
-  const periodFeedItems = useMemo(() => {
-    if (!periodStart || !periodEnd) return [];
-    const items = Array.isArray(categoryFeed?.items) ? categoryFeed.items : [];
-    return items.filter((expense) => {
-      const dateIncurred = String(expense?.date_incurred || "").trim();
-      return Boolean(dateIncurred && dateIncurred >= periodStart && dateIncurred <= periodEnd);
-    });
-  }, [categoryFeed?.items, periodEnd, periodStart]);
 
   const dashboardCurrency = useMemo(() => {
     const itemWithCurrency = periodFeedItems.find((item) => String(item?.currency || "").trim());
@@ -4641,25 +4814,46 @@ function DashboardPanel({ token, embedded = false }) {
   }, [periodFeedItems]);
 
   const periodDayCount = useMemo(() => {
-    if (!periodStart || !periodEnd) return 0;
-    const startDate = new Date(`${periodStart}T00:00:00`);
-    const endDate = new Date(`${periodEnd}T00:00:00`);
+    if (!effectivePeriodStart || !effectivePeriodEnd) return 0;
+    const startDate = new Date(`${effectivePeriodStart}T00:00:00`);
+    const endDate = new Date(`${effectivePeriodEnd}T00:00:00`);
     if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 0;
     const diffMs = Math.max(endDate.getTime() - startDate.getTime(), 0);
     return Math.floor(diffMs / 86400000) + 1;
-  }, [periodEnd, periodStart]);
+  }, [effectivePeriodEnd, effectivePeriodStart]);
+
+  const fallbackTotalSpend = useMemo(() => {
+    return periodFeedItems.reduce((sum, expense) => {
+      const amount = parseNumeric(expense?.amount);
+      if (amount === null) return sum;
+      return sum + amount;
+    }, 0);
+  }, [periodFeedItems]);
+
+  const fallbackExpenseCount = useMemo(() => {
+    return periodFeedItems.reduce((count, expense) => {
+      return parseNumeric(expense?.amount) === null ? count : count + 1;
+    }, 0);
+  }, [periodFeedItems]);
+
+  const periodTotalSpend = usingFallbackPeriod
+    ? Number(fallbackTotalSpend.toFixed(2))
+    : Number(dashboard?.total_spend || 0);
+  const periodExpenseCount = usingFallbackPeriod
+    ? fallbackExpenseCount
+    : Number(dashboard?.expense_count || 0);
 
   const averagePerDay = useMemo(() => {
-    if (!dashboard || periodDayCount <= 0) return 0;
-    return Number(dashboard.total_spend || 0) / periodDayCount;
-  }, [dashboard, periodDayCount]);
+    if (periodDayCount <= 0) return 0;
+    return periodTotalSpend / periodDayCount;
+  }, [periodDayCount, periodTotalSpend]);
 
   const topCategory = useMemo(() => {
-    if (!dashboard?.category_split?.length) {
+    if (!categorySplit.length) {
       return { category: "No category", total: 0 };
     }
-    return dashboard.category_split[0];
-  }, [dashboard?.category_split]);
+    return categorySplit[0];
+  }, [categorySplit]);
 
   const recurringSpend = useMemo(
     () =>
@@ -4672,10 +4866,97 @@ function DashboardPanel({ token, embedded = false }) {
   );
 
   const recurringShare = useMemo(() => {
-    const totalSpend = Number(dashboard?.total_spend || 0);
-    if (totalSpend <= 0) return 0;
-    return (recurringSpend / totalSpend) * 100;
-  }, [dashboard?.total_spend, recurringSpend]);
+    if (periodTotalSpend <= 0) return 0;
+    return (recurringSpend / periodTotalSpend) * 100;
+  }, [periodTotalSpend, recurringSpend]);
+
+  const monthlyTrendByMonth = useMemo(() => {
+    const trend = Array.isArray(dashboard?.monthly_trend) ? dashboard.monthly_trend : [];
+    const totals = new Map();
+    for (const entry of trend) {
+      const monthKey = String(entry?.month || "").trim();
+      if (!monthKey) continue;
+      totals.set(monthKey, Number(entry?.total || 0));
+    }
+    return totals;
+  }, [dashboard?.monthly_trend]);
+
+  const previousPeriodMonth = useMemo(() => {
+    return shiftMonthKey(effectivePeriodMonth, -1);
+  }, [effectivePeriodMonth]);
+
+  const previousPeriodRange = useMemo(() => {
+    return buildMonthRange(previousPeriodMonth);
+  }, [previousPeriodMonth]);
+
+  const previousPeriodStart = String(previousPeriodRange?.start || "").trim();
+  const previousPeriodEnd = String(previousPeriodRange?.end || "").trim();
+
+  const previousPeriodFeedItems = useMemo(() => {
+    if (!previousPeriodStart || !previousPeriodEnd) return [];
+    const items = Array.isArray(categoryFeed?.items) ? categoryFeed.items : [];
+    return items.filter((expense) => {
+      const dateIncurred = String(expense?.date_incurred || "").trim();
+      return Boolean(
+        dateIncurred &&
+          dateIncurred >= previousPeriodStart &&
+          dateIncurred <= previousPeriodEnd
+      );
+    });
+  }, [categoryFeed?.items, previousPeriodEnd, previousPeriodStart]);
+
+  const previousPeriodTotalFromFeed = useMemo(() => {
+    return previousPeriodFeedItems.reduce((sum, expense) => {
+      const amount = parseNumeric(expense?.amount);
+      if (amount === null) return sum;
+      return sum + amount;
+    }, 0);
+  }, [previousPeriodFeedItems]);
+
+  const previousPeriodTotalSpend = useMemo(() => {
+    if (previousPeriodMonth && monthlyTrendByMonth.has(previousPeriodMonth)) {
+      return Number(monthlyTrendByMonth.get(previousPeriodMonth) || 0);
+    }
+    return Number(previousPeriodTotalFromFeed.toFixed(2));
+  }, [monthlyTrendByMonth, previousPeriodMonth, previousPeriodTotalFromFeed]);
+
+  const previousRecurringSpend = useMemo(() => {
+    return previousPeriodFeedItems.reduce((sum, expense) => {
+      const amount = parseNumeric(expense?.amount);
+      if (!expense?.is_recurring || amount === null) return sum;
+      return sum + amount;
+    }, 0);
+  }, [previousPeriodFeedItems]);
+
+  const previousTopCategorySpend = useMemo(() => {
+    const categoryLabel = String(topCategory?.category || "").trim();
+    if (!categoryLabel || categoryLabel === "No category") return 0;
+    const normalizedCategory = normalizeTaxonomyName(categoryLabel);
+    return previousPeriodFeedItems.reduce((sum, expense) => {
+      const amount = parseNumeric(expense?.amount);
+      if (amount === null) return sum;
+      const expenseCategory = normalizeTaxonomyName(
+        String(expense?.category || "Other").trim() || "Other"
+      );
+      if (expenseCategory !== normalizedCategory) return sum;
+      return sum + amount;
+    }, 0);
+  }, [previousPeriodFeedItems, topCategory?.category]);
+
+  const totalSpendDeltaLabel = useMemo(() => {
+    return formatMonthOverMonthDelta(periodTotalSpend, previousPeriodTotalSpend, dashboardCurrency);
+  }, [dashboardCurrency, periodTotalSpend, previousPeriodTotalSpend]);
+
+  const recurringDeltaLabel = useMemo(() => {
+    return formatMonthOverMonthDelta(recurringSpend, previousRecurringSpend, dashboardCurrency);
+  }, [dashboardCurrency, previousRecurringSpend, recurringSpend]);
+
+  const topCategoryDeltaLabel = useMemo(() => {
+    if (!topCategory || String(topCategory.category || "").trim() === "No category") {
+      return "No category data for previous month";
+    }
+    return formatMonthOverMonthDelta(topCategory.total || 0, previousTopCategorySpend, dashboardCurrency);
+  }, [dashboardCurrency, previousTopCategorySpend, topCategory]);
 
   const dailySpendSeries = useMemo(() => {
     const totalsByDay = new Map();
@@ -4745,7 +5026,7 @@ function DashboardPanel({ token, embedded = false }) {
   }, [dailySpendSeries, maxDailySpendTotal]);
 
   const categoryPie = useMemo(() => {
-    const split = Array.isArray(dashboard?.category_split) ? dashboard.category_split : [];
+    const split = Array.isArray(categorySplit) ? categorySplit : [];
     const total = split.reduce((sum, item) => sum + Number(item?.total || 0), 0);
     const centerX = 120;
     const centerY = 120;
@@ -4793,7 +5074,7 @@ function DashboardPanel({ token, embedded = false }) {
       viewBox: "0 0 240 240",
       segments,
     };
-  }, [dashboard?.category_split]);
+  }, [categorySplit]);
 
   const activePieSegment = useMemo(() => {
     const selectedKey = hoveredPieSliceKey || activePieSliceKey;
@@ -4802,17 +5083,10 @@ function DashboardPanel({ token, embedded = false }) {
   }, [activePieSliceKey, categoryPie.segments, hoveredPieSliceKey]);
 
   const periodSubtitle = useMemo(() => {
-    if (!periodStart || !periodEnd) return "Current month overview";
-    const startDate = new Date(`${periodStart}T00:00:00`);
-    if (Number.isNaN(startDate.getTime())) {
-      return `${formatDateValue(periodStart)} - ${formatDateValue(periodEnd)}`;
-    }
-    const windowStart = new Date(startDate);
-    windowStart.setDate(1);
-    windowStart.setMonth(windowStart.getMonth() - Math.max(monthsBack - 1, 0));
-    const windowStartIso = `${windowStart.getFullYear()}-${String(windowStart.getMonth() + 1).padStart(2, "0")}-01`;
-    return `${formatDateValue(windowStartIso)} - ${formatDateValue(periodEnd)}`;
-  }, [monthsBack, periodEnd, periodStart]);
+    if (!effectivePeriodStart || !effectivePeriodEnd) return "Current month overview";
+    const range = `${formatDateValue(effectivePeriodStart)} - ${formatDateValue(effectivePeriodEnd)}`;
+    return usingFallbackPeriod ? `${range} (latest month with activity)` : range;
+  }, [effectivePeriodEnd, effectivePeriodStart, usingFallbackPeriod]);
 
   const categoryEntriesByKey = useMemo(() => {
     const grouped = new Map();
@@ -4883,6 +5157,10 @@ function DashboardPanel({ token, embedded = false }) {
     setExpandedPersonKey((previous) => (previous === key ? "" : key));
   }
 
+  const canGoToLedger = typeof onGoToLedger === "function";
+  const canGoToRecurring = typeof onGoToRecurring === "function";
+  const canOpenSettings = typeof onOpenSettings === "function";
+
   return (
     <section className={embedded ? "embedded-panel insights-overview-panel" : "panel"}>
       <div className="dashboard-header insights-dashboard-header">
@@ -4911,13 +5189,21 @@ function DashboardPanel({ token, embedded = false }) {
 
       {dashboard && !loading && (
         <>
+          <BudgetOverviewCard
+            totalBudget={totalBudget}
+            currentSpent={periodTotalSpend}
+            currency={dashboardCurrency}
+            periodMonth={effectivePeriodMonth || dashboardPeriodMonth}
+            onEditBudget={canOpenSettings ? onOpenSettings : undefined}
+          />
           <div className="stats-grid insights-stats-row">
             <article className="stat-card insights-stat-card">
               <p className="insights-stat-label">Total Spent</p>
               <p className="insights-stat-value">
-                {formatCurrencyValue(dashboard.total_spend, dashboardCurrency)}
+                {formatCurrencyValue(periodTotalSpend, dashboardCurrency)}
               </p>
-              <p className="insights-stat-sub">{dashboard.expense_count} transactions</p>
+              <p className="insights-stat-sub">{periodExpenseCount} transactions</p>
+              <p className="insights-stat-sub insights-stat-delta">{totalSpendDeltaLabel}</p>
             </article>
             <article className="stat-card insights-stat-card">
               <p className="insights-stat-label">Avg / Day</p>
@@ -4930,11 +5216,13 @@ function DashboardPanel({ token, embedded = false }) {
               <p className="insights-stat-sub">
                 {formatCurrencyValue(topCategory.total || 0, dashboardCurrency)}
               </p>
+              <p className="insights-stat-sub insights-stat-delta">{topCategoryDeltaLabel}</p>
             </article>
             <article className="stat-card insights-stat-card">
               <p className="insights-stat-label">Recurring</p>
               <p className="insights-stat-value">{formatCurrencyValue(recurringSpend, dashboardCurrency)}</p>
               <p className="insights-stat-sub">{recurringShare.toFixed(0)}% of total</p>
+              <p className="insights-stat-sub insights-stat-delta">{recurringDeltaLabel}</p>
             </article>
           </div>
 
@@ -4943,7 +5231,7 @@ function DashboardPanel({ token, embedded = false }) {
               <article className="result-card insights-result-card insights-card-daily">
                 <h3>Daily Spending Over Time</h3>
                 {dailyChartModel === null ? (
-                  <p>No daily spend data this month.</p>
+                  <p>No daily spend data for this period.</p>
                 ) : (
                   <div className="insights-line-chart-wrap">
                     <svg
@@ -5016,7 +5304,21 @@ function DashboardPanel({ token, embedded = false }) {
               <article className="result-card insights-result-card insights-pie-card">
                 <h3>Spending by Category</h3>
                 {categoryPie.segments.length === 0 ? (
-                  <p>No confirmed expenses this month.</p>
+                  <div className="insights-empty-actions">
+                    <p>No confirmed expenses for this period.</p>
+                    <div className="row">
+                      {canGoToLedger && (
+                        <button type="button" className="btn-main" onClick={onGoToLedger}>
+                          Add expense
+                        </button>
+                      )}
+                      {canGoToRecurring && (
+                        <button type="button" className="btn-ghost" onClick={onGoToRecurring}>
+                          Open recurring
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 ) : (
                   <>
                     <div className="insights-pie-shell">
@@ -5127,7 +5429,16 @@ function DashboardPanel({ token, embedded = false }) {
               <article className="result-card insights-result-card insights-card-person">
                 <h3>Spending by Family Member</h3>
                 {personSplit.length === 0 ? (
-                  <p>No family-member data yet.</p>
+                  <div className="insights-empty-actions">
+                    <p>No family-member data yet.</p>
+                    {canGoToLedger && (
+                      <div className="row">
+                        <button type="button" className="btn-ghost" onClick={onGoToLedger}>
+                          View ledger
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="category-split-list insights-category-list insights-person-list">
                     {personSplit.map((item, index) => {
@@ -5198,7 +5509,7 @@ function DashboardPanel({ token, embedded = false }) {
                                 <p className="category-expense-empty">{categoryFeedError}</p>
                               ) : personEntries.length === 0 ? (
                                 <p className="category-expense-empty">
-                                  No entries found in this month for this family member.
+                                  No entries found in this period for this family member.
                                 </p>
                               ) : (
                                 <>
@@ -5242,11 +5553,25 @@ function DashboardPanel({ token, embedded = false }) {
 
               <article className="result-card insights-result-card insights-card-category">
                 <h3>Category Split</h3>
-                {dashboard.category_split.length === 0 ? (
-                  <p>No confirmed expenses this month.</p>
+                {categorySplit.length === 0 ? (
+                  <div className="insights-empty-actions">
+                    <p>No confirmed expenses for this period.</p>
+                    <div className="row">
+                      {canGoToLedger && (
+                        <button type="button" className="btn-main" onClick={onGoToLedger}>
+                          Add expense
+                        </button>
+                      )}
+                      {canGoToRecurring && (
+                        <button type="button" className="btn-ghost" onClick={onGoToRecurring}>
+                          Open recurring
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 ) : (
                   <div className="category-split-list insights-category-list">
-                    {dashboard.category_split.map((item, index) => {
+                    {categorySplit.map((item, index) => {
                       const categoryLabel = String(item.category || "Other").trim() || "Other";
                       const categoryKey = normalizeTaxonomyName(categoryLabel);
                       const isExpanded = expandedCategoryKey === categoryKey;
@@ -5294,7 +5619,7 @@ function DashboardPanel({ token, embedded = false }) {
                                 <p className="category-expense-empty">{categoryFeedError}</p>
                               ) : categoryEntries.length === 0 ? (
                                 <p className="category-expense-empty">
-                                  No entries found in this month for this category.
+                                  No entries found in this period for this category.
                                 </p>
                               ) : (
                                 <>
@@ -5715,11 +6040,17 @@ function InsightsViewSwitch({ activeView, onChange }) {
   );
 }
 
-function InsightsPanel({ token, activeView }) {
+function InsightsPanel({ token, activeView, onGoToLedger, onGoToRecurring, onOpenSettings }) {
   return (
     <section className="panel insights-panel-shell">
       {activeView === "overview" ? (
-        <DashboardPanel token={token} embedded />
+        <DashboardPanel
+          token={token}
+          embedded
+          onGoToLedger={onGoToLedger}
+          onGoToRecurring={onGoToRecurring}
+          onOpenSettings={onOpenSettings}
+        />
       ) : (
         <AnalyticsPanel token={token} embedded />
       )}
@@ -5921,7 +6252,15 @@ export default function App() {
               <LedgerPanel token={auth.token} user={auth.user} onOpenSettings={() => setActiveTab("settings")} />
             )}
             {activeTab === "recurring" && <RecurringPanel token={auth.token} user={auth.user} />}
-            {activeTab === "insights" && <InsightsPanel token={auth.token} activeView={insightsView} />}
+            {activeTab === "insights" && (
+              <InsightsPanel
+                token={auth.token}
+                activeView={insightsView}
+                onGoToLedger={() => setActiveTab("ledger")}
+                onGoToRecurring={() => setActiveTab("recurring")}
+                onOpenSettings={() => setActiveTab("settings")}
+              />
+            )}
             {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
             {activeTab === "settings" && (
               <SettingsPanel

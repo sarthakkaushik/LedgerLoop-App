@@ -1980,6 +1980,12 @@ a:focus-visible {
   font-size: 0.84rem;
 }
 
+.insights-stat-delta {
+  margin-top: 6px;
+  color: #f7c59f;
+  font-size: 0.76rem;
+}
+
 .insights-dashboard-grid {
   margin-top: 0;
   display: grid;
@@ -2037,6 +2043,15 @@ a:focus-visible {
 
 .insights-result-card p {
   color: #a7a9be;
+}
+
+.insights-empty-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.insights-empty-actions .row {
+  flex-wrap: wrap;
 }
 
 .insights-line-chart-wrap {
