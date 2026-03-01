@@ -2058,16 +2058,16 @@ a:focus-visible {
   border: 1px solid #2f2e45;
   border-radius: 12px;
   background: #161525;
-  min-height: 268px;
-  padding: 12px;
+  min-height: 232px;
+  padding: 14px;
   overflow: hidden;
 }
 
 .insights-monthly-bars {
-  min-height: 240px;
+  min-height: 198px;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 14px;
   align-items: end;
 }
 
@@ -2075,22 +2075,24 @@ a:focus-visible {
   display: grid;
   grid-template-rows: 1fr auto auto;
   gap: 6px;
-  min-height: 230px;
+  min-height: 190px;
   align-items: end;
+  justify-items: center;
 }
 
 .insights-month-bar-value {
   color: #a7a9be;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
 
 .insights-month-bar-track {
-  border: 1px solid #343352;
-  border-radius: 8px;
-  background: #1f1e31;
-  min-height: 168px;
+  width: clamp(24px, 3.2vw, 32px);
+  height: 150px;
+  border: 1px solid #3b3a57;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #23223a 0%, #1b1a2d 100%);
   display: flex;
   align-items: flex-end;
   overflow: hidden;
@@ -2098,8 +2100,8 @@ a:focus-visible {
 
 .insights-month-bar-fill {
   width: 100%;
-  border-radius: 6px 6px 0 0;
-  background: #ff8b52;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ff9f7f 0%, #ff6b35 100%);
   transition: height 260ms ease;
 }
 
@@ -3973,21 +3975,22 @@ a:focus-visible {
 
   .insights-monthly-pattern {
     padding: 10px;
-    min-height: 240px;
+    min-height: 214px;
   }
 
   .insights-monthly-bars {
-    min-height: 210px;
-    grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
+    min-height: 184px;
+    grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
     gap: 8px;
   }
 
   .insights-month-bar {
-    min-height: 200px;
+    min-height: 176px;
   }
 
   .insights-month-bar-track {
-    min-height: 142px;
+    width: 22px;
+    height: 134px;
   }
 
   .insights-month-bar-value,
