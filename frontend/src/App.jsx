@@ -4484,25 +4484,6 @@ function buildSmoothSvgPath(points, smoothing = 0.16) {
   return path;
 }
 
-function formatAxisDayMonth(value) {
-  const normalized = String(value || "").trim();
-  if (!normalized) return "";
-  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
-    ? new Date(`${normalized}T00:00:00`)
-    : new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return normalized;
-  try {
-    return new Intl.DateTimeFormat("en-GB", {
-      day: "2-digit",
-      month: "short",
-    })
-      .format(parsed)
-      .replace(" ", "-");
-  } catch {
-    return normalized;
-  }
-}
-
 function describePieSlicePath(centerX, centerY, radius, startAngle, endAngle) {
   const angleDistance = endAngle - startAngle;
   if (angleDistance >= Math.PI * 2 - 0.001) {
@@ -4553,19 +4534,24 @@ function shiftMonthKey(monthKey, deltaMonths) {
   return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function formatMonthOverMonthDelta(currentValue, previousValue, currencyCode = "INR") {
+function formatMonthOverMonthDelta(
+  currentValue,
+  previousValue,
+  currencyCode = "INR",
+  comparisonLabel = "vs previous month"
+) {
   const current = parseNumeric(currentValue) ?? 0;
   const previous = parseNumeric(previousValue) ?? 0;
   const diff = current - previous;
-  if (Math.abs(diff) < 0.01) return "No change vs previous month";
+  if (Math.abs(diff) < 0.01) return `No change ${comparisonLabel}`;
   if (previous <= 0) {
-    if (current <= 0) return "No change vs previous month";
-    return `+${formatCurrencyValue(Math.abs(diff), currencyCode)} vs previous month`;
+    if (current <= 0) return `No change ${comparisonLabel}`;
+    return `+${formatCurrencyValue(Math.abs(diff), currencyCode)} ${comparisonLabel}`;
   }
   const percent = (diff / previous) * 100;
   const diffPrefix = diff > 0 ? "+" : "-";
   const percentPrefix = percent > 0 ? "+" : "-";
-  return `${diffPrefix}${formatCurrencyValue(Math.abs(diff), currencyCode)} (${percentPrefix}${Math.abs(percent).toFixed(1)}%) vs previous month`;
+  return `${diffPrefix}${formatCurrencyValue(Math.abs(diff), currencyCode)} (${percentPrefix}${Math.abs(percent).toFixed(1)}%) ${comparisonLabel}`;
 }
 
 function DashboardPanel({
@@ -4674,36 +4660,31 @@ function DashboardPanel({
   const periodStart = String(dashboard?.period_start || "").trim();
   const periodEnd = String(dashboard?.period_end || "").trim();
 
-  const shouldUseFallbackPeriod = useMemo(() => {
-    const totalSpend = Number(dashboard?.total_spend || 0);
-    const expenseCount = Number(dashboard?.expense_count || 0);
-    return totalSpend === 0 && expenseCount === 0;
-  }, [dashboard?.expense_count, dashboard?.total_spend]);
-
-  const fallbackPeriodMonth = useMemo(() => {
-    if (!shouldUseFallbackPeriod) return "";
+  const monthlyTrendSeries = useMemo(() => {
     const trend = Array.isArray(dashboard?.monthly_trend) ? dashboard.monthly_trend : [];
-    for (let index = trend.length - 1; index >= 0; index -= 1) {
-      const month = String(trend[index]?.month || "").trim();
-      const total = Number(trend[index]?.total || 0);
-      if (!month || month === dashboardPeriodMonth) continue;
-      if (total > 0) return month;
-    }
-    return "";
-  }, [dashboard?.monthly_trend, dashboardPeriodMonth, shouldUseFallbackPeriod]);
+    return trend
+      .map((entry) => ({
+        month: String(entry?.month || "").trim(),
+        total: Number(entry?.total || 0),
+      }))
+      .filter((entry) => Boolean(entry.month));
+  }, [dashboard?.monthly_trend]);
 
-  const effectivePeriodMonth = fallbackPeriodMonth || dashboardPeriodMonth;
-  const effectivePeriodRange = useMemo(() => {
-    const monthRange = buildMonthRange(effectivePeriodMonth);
-    if (monthRange) return monthRange;
-    return {
-      start: periodStart,
-      end: periodEnd,
-    };
-  }, [effectivePeriodMonth, periodEnd, periodStart]);
-  const effectivePeriodStart = String(effectivePeriodRange.start || "").trim();
-  const effectivePeriodEnd = String(effectivePeriodRange.end || "").trim();
-  const usingFallbackPeriod = Boolean(fallbackPeriodMonth && fallbackPeriodMonth !== dashboardPeriodMonth);
+  const trendWindowStartMonth =
+    monthlyTrendSeries[0]?.month || dashboardPeriodMonth;
+  const trendWindowEndMonth =
+    monthlyTrendSeries[monthlyTrendSeries.length - 1]?.month || dashboardPeriodMonth;
+
+  const trendWindowStart = useMemo(() => {
+    return buildMonthRange(trendWindowStartMonth);
+  }, [trendWindowStartMonth]);
+
+  const trendWindowEnd = useMemo(() => {
+    return buildMonthRange(trendWindowEndMonth);
+  }, [trendWindowEndMonth]);
+
+  const effectivePeriodStart = String(trendWindowStart?.start || periodStart).trim();
+  const effectivePeriodEnd = String(trendWindowEnd?.end || periodEnd).trim();
 
   const periodFeedItems = useMemo(() => {
     if (!effectivePeriodStart || !effectivePeriodEnd) return [];
@@ -4718,7 +4699,7 @@ function DashboardPanel({
     });
   }, [categoryFeed?.items, effectivePeriodEnd, effectivePeriodStart]);
 
-  const derivedCategorySplit = useMemo(() => {
+  const categorySplit = useMemo(() => {
     const totals = new Map();
     const counts = new Map();
     for (const expense of periodFeedItems) {
@@ -4737,36 +4718,7 @@ function DashboardPanel({
       .sort((left, right) => right.total - left.total);
   }, [periodFeedItems]);
 
-  const dashboardCategorySplit = useMemo(
-    () => (Array.isArray(dashboard?.category_split) ? dashboard.category_split : []),
-    [dashboard?.category_split]
-  );
-
-  const categorySplit = useMemo(() => {
-    return usingFallbackPeriod ? derivedCategorySplit : dashboardCategorySplit;
-  }, [dashboardCategorySplit, derivedCategorySplit, usingFallbackPeriod]);
-
-  const dashboardPersonSplit = useMemo(() => {
-    if (Array.isArray(dashboard?.family_member_split) && dashboard.family_member_split.length) {
-      return dashboard.family_member_split.map((item) => ({
-        id: String(item.family_member_id || item.family_member_name || ""),
-        name: String(item.family_member_name || "Unknown"),
-        total: Number(item.total || 0),
-        count: Number(item.count || 0),
-      }));
-    }
-    if (Array.isArray(dashboard?.user_split) && dashboard.user_split.length) {
-      return dashboard.user_split.map((item) => ({
-        id: String(item.user_id || item.user_name || ""),
-        name: String(item.user_name || "Unknown"),
-        total: Number(item.total || 0),
-        count: Number(item.count || 0),
-      }));
-    }
-    return [];
-  }, [dashboard]);
-
-  const derivedPersonSplit = useMemo(() => {
+  const personSplit = useMemo(() => {
     const totals = new Map();
     for (const expense of periodFeedItems) {
       const amount = parseNumeric(expense?.amount);
@@ -4794,10 +4746,6 @@ function DashboardPanel({
       .sort((left, right) => right.total - left.total);
   }, [periodFeedItems]);
 
-  const personSplit = useMemo(() => {
-    return usingFallbackPeriod ? derivedPersonSplit : dashboardPersonSplit;
-  }, [dashboardPersonSplit, derivedPersonSplit, usingFallbackPeriod]);
-
   const maxCategoryTotal = useMemo(() => {
     if (!categorySplit.length) return 1;
     return Math.max(...categorySplit.map((item) => Number(item?.total || 0)), 1);
@@ -4809,9 +4757,13 @@ function DashboardPanel({
   }, [personSplit]);
 
   const dashboardCurrency = useMemo(() => {
-    const itemWithCurrency = periodFeedItems.find((item) => String(item?.currency || "").trim());
-    return String(itemWithCurrency?.currency || "INR").toUpperCase();
-  }, [periodFeedItems]);
+    const inWindowCurrency = periodFeedItems.find((item) => String(item?.currency || "").trim());
+    if (inWindowCurrency?.currency) return String(inWindowCurrency.currency).toUpperCase();
+    const fallbackCurrency = Array.isArray(categoryFeed?.items)
+      ? categoryFeed.items.find((item) => String(item?.currency || "").trim())
+      : null;
+    return String(fallbackCurrency?.currency || "INR").toUpperCase();
+  }, [categoryFeed?.items, periodFeedItems]);
 
   const periodDayCount = useMemo(() => {
     if (!effectivePeriodStart || !effectivePeriodEnd) return 0;
@@ -4822,26 +4774,23 @@ function DashboardPanel({
     return Math.floor(diffMs / 86400000) + 1;
   }, [effectivePeriodEnd, effectivePeriodStart]);
 
-  const fallbackTotalSpend = useMemo(() => {
-    return periodFeedItems.reduce((sum, expense) => {
-      const amount = parseNumeric(expense?.amount);
-      if (amount === null) return sum;
-      return sum + amount;
-    }, 0);
+  const periodTotalSpend = useMemo(() => {
+    return Number(
+      periodFeedItems
+        .reduce((sum, expense) => {
+          const amount = parseNumeric(expense?.amount);
+          if (amount === null) return sum;
+          return sum + amount;
+        }, 0)
+        .toFixed(2)
+    );
   }, [periodFeedItems]);
 
-  const fallbackExpenseCount = useMemo(() => {
+  const periodExpenseCount = useMemo(() => {
     return periodFeedItems.reduce((count, expense) => {
       return parseNumeric(expense?.amount) === null ? count : count + 1;
     }, 0);
   }, [periodFeedItems]);
-
-  const periodTotalSpend = usingFallbackPeriod
-    ? Number(fallbackTotalSpend.toFixed(2))
-    : Number(dashboard?.total_spend || 0);
-  const periodExpenseCount = usingFallbackPeriod
-    ? fallbackExpenseCount
-    : Number(dashboard?.expense_count || 0);
 
   const averagePerDay = useMemo(() => {
     if (periodDayCount <= 0) return 0;
@@ -4870,27 +4819,24 @@ function DashboardPanel({
     return (recurringSpend / periodTotalSpend) * 100;
   }, [periodTotalSpend, recurringSpend]);
 
-  const monthlyTrendByMonth = useMemo(() => {
-    const trend = Array.isArray(dashboard?.monthly_trend) ? dashboard.monthly_trend : [];
-    const totals = new Map();
-    for (const entry of trend) {
-      const monthKey = String(entry?.month || "").trim();
-      if (!monthKey) continue;
-      totals.set(monthKey, Number(entry?.total || 0));
-    }
-    return totals;
-  }, [dashboard?.monthly_trend]);
+  const previousPeriodStartMonth = useMemo(() => {
+    return shiftMonthKey(trendWindowStartMonth, -monthsBack);
+  }, [monthsBack, trendWindowStartMonth]);
 
-  const previousPeriodMonth = useMemo(() => {
-    return shiftMonthKey(effectivePeriodMonth, -1);
-  }, [effectivePeriodMonth]);
+  const previousPeriodEndMonth = useMemo(() => {
+    return shiftMonthKey(trendWindowEndMonth, -monthsBack);
+  }, [monthsBack, trendWindowEndMonth]);
 
-  const previousPeriodRange = useMemo(() => {
-    return buildMonthRange(previousPeriodMonth);
-  }, [previousPeriodMonth]);
+  const previousPeriodRangeStart = useMemo(() => {
+    return buildMonthRange(previousPeriodStartMonth);
+  }, [previousPeriodStartMonth]);
 
-  const previousPeriodStart = String(previousPeriodRange?.start || "").trim();
-  const previousPeriodEnd = String(previousPeriodRange?.end || "").trim();
+  const previousPeriodRangeEnd = useMemo(() => {
+    return buildMonthRange(previousPeriodEndMonth);
+  }, [previousPeriodEndMonth]);
+
+  const previousPeriodStart = String(previousPeriodRangeStart?.start || "").trim();
+  const previousPeriodEnd = String(previousPeriodRangeEnd?.end || "").trim();
 
   const previousPeriodFeedItems = useMemo(() => {
     if (!previousPeriodStart || !previousPeriodEnd) return [];
@@ -4905,20 +4851,17 @@ function DashboardPanel({
     });
   }, [categoryFeed?.items, previousPeriodEnd, previousPeriodStart]);
 
-  const previousPeriodTotalFromFeed = useMemo(() => {
-    return previousPeriodFeedItems.reduce((sum, expense) => {
-      const amount = parseNumeric(expense?.amount);
-      if (amount === null) return sum;
-      return sum + amount;
-    }, 0);
-  }, [previousPeriodFeedItems]);
-
   const previousPeriodTotalSpend = useMemo(() => {
-    if (previousPeriodMonth && monthlyTrendByMonth.has(previousPeriodMonth)) {
-      return Number(monthlyTrendByMonth.get(previousPeriodMonth) || 0);
-    }
-    return Number(previousPeriodTotalFromFeed.toFixed(2));
-  }, [monthlyTrendByMonth, previousPeriodMonth, previousPeriodTotalFromFeed]);
+    return Number(
+      previousPeriodFeedItems
+        .reduce((sum, expense) => {
+          const amount = parseNumeric(expense?.amount);
+          if (amount === null) return sum;
+          return sum + amount;
+        }, 0)
+        .toFixed(2)
+    );
+  }, [previousPeriodFeedItems]);
 
   const previousRecurringSpend = useMemo(() => {
     return previousPeriodFeedItems.reduce((sum, expense) => {
@@ -4943,87 +4886,64 @@ function DashboardPanel({
     }, 0);
   }, [previousPeriodFeedItems, topCategory?.category]);
 
+  const comparisonLabel =
+    monthsBack === 1 ? "vs previous month" : `vs previous ${monthsBack} months`;
+
   const totalSpendDeltaLabel = useMemo(() => {
-    return formatMonthOverMonthDelta(periodTotalSpend, previousPeriodTotalSpend, dashboardCurrency);
-  }, [dashboardCurrency, periodTotalSpend, previousPeriodTotalSpend]);
+    return formatMonthOverMonthDelta(
+      periodTotalSpend,
+      previousPeriodTotalSpend,
+      dashboardCurrency,
+      comparisonLabel
+    );
+  }, [comparisonLabel, dashboardCurrency, periodTotalSpend, previousPeriodTotalSpend]);
 
   const recurringDeltaLabel = useMemo(() => {
-    return formatMonthOverMonthDelta(recurringSpend, previousRecurringSpend, dashboardCurrency);
-  }, [dashboardCurrency, previousRecurringSpend, recurringSpend]);
+    return formatMonthOverMonthDelta(
+      recurringSpend,
+      previousRecurringSpend,
+      dashboardCurrency,
+      comparisonLabel
+    );
+  }, [comparisonLabel, dashboardCurrency, previousRecurringSpend, recurringSpend]);
 
   const topCategoryDeltaLabel = useMemo(() => {
     if (!topCategory || String(topCategory.category || "").trim() === "No category") {
-      return "No category data for previous month";
+      return `No category data ${comparisonLabel}`;
     }
-    return formatMonthOverMonthDelta(topCategory.total || 0, previousTopCategorySpend, dashboardCurrency);
-  }, [dashboardCurrency, previousTopCategorySpend, topCategory]);
-
-  const dailySpendSeries = useMemo(() => {
-    const totalsByDay = new Map();
-    for (const expense of periodFeedItems) {
-      const day = String(expense?.date_incurred || "").trim();
-      const amount = parseNumeric(expense?.amount);
-      if (!day || amount === null) continue;
-      totalsByDay.set(day, (totalsByDay.get(day) || 0) + amount);
-    }
-    return Array.from(totalsByDay.entries())
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([day, total]) => ({ day, total: Number(total.toFixed(2)) }));
-  }, [periodFeedItems]);
-
-  const maxDailySpendTotal = useMemo(() => {
-    if (!dailySpendSeries.length) return 1;
-    return Math.max(...dailySpendSeries.map((item) => item.total), 1);
-  }, [dailySpendSeries]);
-
-  const dailyChartModel = useMemo(() => {
-    if (!dailySpendSeries.length) return null;
-    const width = 980;
-    const height = 320;
-    const padding = { top: 16, right: 18, bottom: 44, left: 68 };
-    const innerWidth = width - padding.left - padding.right;
-    const innerHeight = height - padding.top - padding.bottom;
-    const xStep = dailySpendSeries.length > 1 ? innerWidth / (dailySpendSeries.length - 1) : 0;
-    const maxY = Math.max(maxDailySpendTotal, 1);
-
-    const points = dailySpendSeries.map((item, index) => {
-      const x = padding.left + xStep * index;
-      const y = padding.top + innerHeight - (item.total / maxY) * innerHeight;
-      return { ...item, index, x, y };
-    });
-
-    const linePath = buildSmoothSvgPath(points);
-    const baselineY = padding.top + innerHeight;
-    const areaPath = `${linePath} L ${points[points.length - 1].x.toFixed(2)} ${baselineY.toFixed(2)} L ${points[0].x.toFixed(2)} ${baselineY.toFixed(2)} Z`;
-
-    const yTicks = Array.from({ length: 5 }, (_, index) => {
-      const ratio = index / 4;
-      const value = maxY * (1 - ratio);
-      const y = padding.top + innerHeight * ratio;
-      return { value, y };
-    });
-
-    const maxTickCount = 6;
-    const interval = Math.max(Math.ceil(points.length / maxTickCount), 1);
-    const xTicks = points.filter(
-      (point) =>
-        point.index === 0 ||
-        point.index === points.length - 1 ||
-        point.index % interval === 0
+    return formatMonthOverMonthDelta(
+      topCategory.total || 0,
+      previousTopCategorySpend,
+      dashboardCurrency,
+      comparisonLabel
     );
+  }, [comparisonLabel, dashboardCurrency, previousTopCategorySpend, topCategory]);
 
-    return {
-      width,
-      height,
-      padding,
-      points,
-      yTicks,
-      xTicks,
-      linePath,
-      areaPath,
-      baselineY,
-    };
-  }, [dailySpendSeries, maxDailySpendTotal]);
+  const maxMonthlyTrendTotal = useMemo(() => {
+    if (!monthlyTrendSeries.length) return 1;
+    return Math.max(...monthlyTrendSeries.map((item) => item.total), 1);
+  }, [monthlyTrendSeries]);
+
+  const monthlyPatternBars = useMemo(() => {
+    return monthlyTrendSeries.map((item) => {
+      const rawHeight =
+        maxMonthlyTrendTotal > 0 ? (Number(item.total || 0) / maxMonthlyTrendTotal) * 100 : 0;
+      const height = Number(item.total || 0) <= 0 ? 0 : Math.max(rawHeight, 8);
+      return {
+        ...item,
+        height,
+        label: formatMonthYearValue(item.month, { monthStyle: "short", separator: " " }),
+      };
+    });
+  }, [maxMonthlyTrendTotal, monthlyTrendSeries]);
+
+  const monthlyPatternTicks = useMemo(() => {
+    const maxValue = Math.max(maxMonthlyTrendTotal, 1);
+    return [1, 0.75, 0.5, 0.25, 0].map((ratio) => ({
+      value: maxValue * ratio,
+      ratio,
+    }));
+  }, [maxMonthlyTrendTotal]);
 
   const categoryPie = useMemo(() => {
     const split = Array.isArray(categorySplit) ? categorySplit : [];
@@ -5084,9 +5004,8 @@ function DashboardPanel({
 
   const periodSubtitle = useMemo(() => {
     if (!effectivePeriodStart || !effectivePeriodEnd) return "Current month overview";
-    const range = `${formatDateValue(effectivePeriodStart)} - ${formatDateValue(effectivePeriodEnd)}`;
-    return usingFallbackPeriod ? `${range} (latest month with activity)` : range;
-  }, [effectivePeriodEnd, effectivePeriodStart, usingFallbackPeriod]);
+    return `${formatDateValue(effectivePeriodStart)} - ${formatDateValue(effectivePeriodEnd)}`;
+  }, [effectivePeriodEnd, effectivePeriodStart]);
 
   const categoryEntriesByKey = useMemo(() => {
     const grouped = new Map();
@@ -5191,9 +5110,9 @@ function DashboardPanel({
         <>
           <BudgetOverviewCard
             totalBudget={totalBudget}
-            currentSpent={periodTotalSpend}
+            currentSpent={Number(dashboard?.total_spend || 0)}
             currency={dashboardCurrency}
-            periodMonth={effectivePeriodMonth || dashboardPeriodMonth}
+            periodMonth={dashboardPeriodMonth}
             onEditBudget={canOpenSettings ? onOpenSettings : undefined}
           />
           <div className="stats-grid insights-stats-row">
@@ -5229,71 +5148,51 @@ function DashboardPanel({
           <div className="result-grid dashboard-grid insights-dashboard-grid">
             <div className="insights-layout-main">
               <article className="result-card insights-result-card insights-card-daily">
-                <h3>Daily Spending Over Time</h3>
-                {dailyChartModel === null ? (
-                  <p>No daily spend data for this period.</p>
+                <h3>Month-on-Month Spending Pattern</h3>
+                {monthlyPatternBars.length === 0 ? (
+                  <p>No monthly spend data for this window.</p>
                 ) : (
-                  <div className="insights-line-chart-wrap">
-                    <svg
-                      className="insights-line-chart"
-                      viewBox={`0 0 ${dailyChartModel.width} ${dailyChartModel.height}`}
-                      role="img"
-                      aria-label="Daily spending line chart"
-                    >
-                      <defs>
-                        <linearGradient id="insightsAreaFill" x1="0%" y1="0%" x2="0%" y2="100%">
-                          <stop offset="0%" stopColor="rgba(255,107,53,0.38)" />
-                          <stop offset="100%" stopColor="rgba(255,107,53,0.06)" />
-                        </linearGradient>
-                      </defs>
-
-                      {dailyChartModel.yTicks.map((tick, index) => (
-                        <line
-                          key={`line-grid-${index}`}
-                          x1={dailyChartModel.padding.left}
-                          x2={dailyChartModel.width - dailyChartModel.padding.right}
-                          y1={tick.y}
-                          y2={tick.y}
-                          className="insights-line-grid-line"
+                  <div
+                    className="insights-monthly-pattern"
+                    role="img"
+                    aria-label="Month-on-month spending vertical bar chart"
+                  >
+                    <div className="insights-monthly-grid" aria-hidden="true">
+                      {monthlyPatternTicks.map((tick) => (
+                        <div
+                          className="insights-monthly-grid-line"
+                          key={`monthly-grid-${tick.ratio}`}
+                          style={{ top: `${(1 - tick.ratio) * 100}%` }}
                         />
                       ))}
-
-                      <path d={dailyChartModel.areaPath} className="insights-line-area-path" />
-                      <path d={dailyChartModel.linePath} className="insights-line-path" />
-
-                      {dailyChartModel.points.map((point) => (
-                        <circle
-                          key={point.day}
-                          cx={point.x}
-                          cy={point.y}
-                          r={5}
-                          className="insights-line-point"
-                        />
-                      ))}
-
-                      {dailyChartModel.yTicks.map((tick, index) => (
-                        <text
-                          key={`line-y-${index}`}
-                          x={8}
-                          y={tick.y + 4}
-                          className="insights-line-axis-label"
+                    </div>
+                    <div className="insights-monthly-y-axis" aria-hidden="true">
+                      {monthlyPatternTicks.map((tick) => (
+                        <span
+                          key={`monthly-axis-${tick.ratio}`}
+                          style={{ top: `${(1 - tick.ratio) * 100}%` }}
                         >
                           {formatCompactCurrencyValue(tick.value, dashboardCurrency)}
-                        </text>
+                        </span>
                       ))}
-
-                      {dailyChartModel.xTicks.map((point) => (
-                        <text
-                          key={`line-x-${point.day}`}
-                          x={point.x}
-                          y={dailyChartModel.height - 10}
-                          textAnchor="middle"
-                          className="insights-line-axis-label"
-                        >
-                          {formatAxisDayMonth(point.day)}
-                        </text>
+                    </div>
+                    <div className="insights-monthly-bars">
+                      {monthlyPatternBars.map((item) => (
+                        <div className="insights-month-bar" key={item.month}>
+                          <span className="insights-month-bar-value">
+                            {formatCompactCurrencyValue(item.total, dashboardCurrency)}
+                          </span>
+                          <div className="insights-month-bar-track">
+                            <div
+                              className="insights-month-bar-fill"
+                              style={{ height: `${item.height}%` }}
+                              title={`${item.label}: ${formatCurrencyValue(item.total, dashboardCurrency)}`}
+                            />
+                          </div>
+                          <span className="insights-month-bar-label">{item.label}</span>
+                        </div>
                       ))}
-                    </svg>
+                    </div>
                   </div>
                 )}
               </article>
