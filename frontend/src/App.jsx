@@ -4937,14 +4937,6 @@ function DashboardPanel({
     });
   }, [maxMonthlyTrendTotal, monthlyTrendSeries]);
 
-  const monthlyPatternTicks = useMemo(() => {
-    const maxValue = Math.max(maxMonthlyTrendTotal, 1);
-    return [1, 0.75, 0.5, 0.25, 0].map((ratio) => ({
-      value: maxValue * ratio,
-      ratio,
-    }));
-  }, [maxMonthlyTrendTotal]);
-
   const categoryPie = useMemo(() => {
     const split = Array.isArray(categorySplit) ? categorySplit : [];
     const total = split.reduce((sum, item) => sum + Number(item?.total || 0), 0);
@@ -5157,31 +5149,9 @@ function DashboardPanel({
                     role="img"
                     aria-label="Month-on-month spending vertical bar chart"
                   >
-                    <div className="insights-monthly-grid" aria-hidden="true">
-                      {monthlyPatternTicks.map((tick) => (
-                        <div
-                          className="insights-monthly-grid-line"
-                          key={`monthly-grid-${tick.ratio}`}
-                          style={{ top: `${(1 - tick.ratio) * 100}%` }}
-                        />
-                      ))}
-                    </div>
-                    <div className="insights-monthly-y-axis" aria-hidden="true">
-                      {monthlyPatternTicks.map((tick) => (
-                        <span
-                          key={`monthly-axis-${tick.ratio}`}
-                          style={{ top: `${(1 - tick.ratio) * 100}%` }}
-                        >
-                          {formatCompactCurrencyValue(tick.value, dashboardCurrency)}
-                        </span>
-                      ))}
-                    </div>
                     <div className="insights-monthly-bars">
                       {monthlyPatternBars.map((item) => (
                         <div className="insights-month-bar" key={item.month}>
-                          <span className="insights-month-bar-value">
-                            {formatCompactCurrencyValue(item.total, dashboardCurrency)}
-                          </span>
                           <div className="insights-month-bar-track">
                             <div
                               className="insights-month-bar-fill"
@@ -5190,6 +5160,9 @@ function DashboardPanel({
                             />
                           </div>
                           <span className="insights-month-bar-label">{item.label}</span>
+                          <span className="insights-month-bar-value">
+                            {formatCompactCurrencyValue(item.total, dashboardCurrency)}
+                          </span>
                         </div>
                       ))}
                     </div>

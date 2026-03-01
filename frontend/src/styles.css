@@ -2057,98 +2057,57 @@ a:focus-visible {
 .insights-monthly-pattern {
   border: 1px solid #2f2e45;
   border-radius: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 107, 53, 0.08), rgba(255, 107, 53, 0.02)),
-    #161525;
-  min-height: 320px;
-  padding: 14px 10px 10px 76px;
-  position: relative;
+  background: #161525;
+  min-height: 268px;
+  padding: 12px;
   overflow: hidden;
 }
 
-.insights-monthly-grid {
-  position: absolute;
-  left: 76px;
-  right: 10px;
-  top: 14px;
-  bottom: 38px;
-}
-
-.insights-monthly-grid-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  border-top: 1px dashed #343352;
-}
-
-.insights-monthly-y-axis {
-  position: absolute;
-  left: 10px;
-  top: 14px;
-  bottom: 38px;
-  width: 62px;
-}
-
-.insights-monthly-y-axis span {
-  position: absolute;
-  right: 0;
-  transform: translateY(-50%);
-  color: #a7a9be;
-  font-size: 0.72rem;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-
 .insights-monthly-bars {
-  position: relative;
-  z-index: 2;
-  min-height: 274px;
+  min-height: 240px;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
+  gap: 12px;
   align-items: end;
 }
 
 .insights-month-bar {
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  gap: 8px;
-  min-height: 274px;
+  grid-template-rows: 1fr auto auto;
+  gap: 6px;
+  min-height: 230px;
+  align-items: end;
 }
 
 .insights-month-bar-value {
-  color: #f7c59f;
-  font-size: 0.78rem;
+  color: #a7a9be;
+  font-size: 0.72rem;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
 
 .insights-month-bar-track {
-  border: 1px solid #2f2e45;
-  border-radius: 999px;
-  background: rgba(18, 17, 28, 0.72);
-  min-height: 200px;
+  border: 1px solid #343352;
+  border-radius: 8px;
+  background: #1f1e31;
+  min-height: 168px;
   display: flex;
   align-items: flex-end;
-  justify-content: center;
-  padding: 6px;
+  overflow: hidden;
 }
 
 .insights-month-bar-fill {
   width: 100%;
-  border-radius: 999px;
-  background:
-    linear-gradient(180deg, rgba(255, 151, 92, 0.95), rgba(255, 107, 53, 0.88)),
-    #ff6b35;
-  box-shadow: 0 10px 20px rgba(255, 107, 53, 0.28);
+  border-radius: 6px 6px 0 0;
+  background: #ff8b52;
   transition: height 260ms ease;
 }
 
 .insights-month-bar-label {
   color: #c6c8dd;
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   text-align: center;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .insights-person-chart {
@@ -4013,39 +3972,22 @@ a:focus-visible {
   }
 
   .insights-monthly-pattern {
-    padding: 12px 8px 10px 56px;
-    min-height: 286px;
-  }
-
-  .insights-monthly-grid {
-    left: 56px;
-    right: 8px;
-    bottom: 34px;
-  }
-
-  .insights-monthly-y-axis {
-    width: 46px;
-    left: 8px;
-    bottom: 34px;
-  }
-
-  .insights-monthly-y-axis span {
-    font-size: 0.64rem;
+    padding: 10px;
+    min-height: 240px;
   }
 
   .insights-monthly-bars {
-    min-height: 238px;
-    grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+    min-height: 210px;
+    grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
     gap: 8px;
   }
 
   .insights-month-bar {
-    min-height: 238px;
+    min-height: 200px;
   }
 
   .insights-month-bar-track {
-    min-height: 168px;
-    padding: 5px;
+    min-height: 142px;
   }
 
   .insights-month-bar-value,
