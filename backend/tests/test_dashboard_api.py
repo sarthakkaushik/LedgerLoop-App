@@ -183,3 +183,56 @@ async def test_dashboard_aggregates_and_household_isolation(client: AsyncClient)
         assert data["monthly_trend"][-2]["total"] == 250.0
     finally:
         app.dependency_overrides.pop(get_expense_parser, None)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_materializes_recurring_expense_for_new_month(client: AsyncClient) -> None:
+    token = await register_user(
+        client,
+        "recurring.materialize@example.com",
+        "Family Recurring Materialize",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    today = date.today()
+    month_start = today.replace(day=1)
+    if month_start.month == 1:
+        previous_month_date = month_start.replace(
+            year=month_start.year - 1, month=12, day=15
+        )
+    else:
+        previous_month_date = month_start.replace(month=month_start.month - 1, day=15)
+
+    recurring_create_res = await client.post(
+        "/expenses/recurring",
+        headers=headers,
+        json={
+            "amount": 1800.0,
+            "currency": "INR",
+            "category": "Bills",
+            "description": "Monthly Rent",
+            "merchant_or_item": "Landlord",
+            "date_incurred": str(previous_month_date),
+        },
+    )
+    assert recurring_create_res.status_code == 201
+
+    dashboard_res = await client.get(
+        "/expenses/dashboard?months_back=2",
+        headers=headers,
+    )
+    assert dashboard_res.status_code == 200
+    dashboard_payload = dashboard_res.json()
+    assert dashboard_payload["total_spend"] == 1800.0
+    assert dashboard_payload["expense_count"] == 1
+    assert dashboard_payload["monthly_trend"][-1]["total"] == 1800.0
+    assert dashboard_payload["monthly_trend"][-2]["total"] == 1800.0
+
+    recurring_list_res = await client.get(
+        "/expenses/list?status=confirmed&recurring_only=true",
+        headers=headers,
+    )
+    assert recurring_list_res.status_code == 200
+    recurring_items = recurring_list_res.json()["items"]
+    assert len(recurring_items) == 2
+    assert all(item["is_recurring"] is True for item in recurring_items)

@@ -38,6 +38,7 @@ class Expense(SQLModel, table=True):
     merchant_or_item: str | None = Field(default=None, max_length=255)
     date_incurred: date = Field(nullable=False)
     is_recurring: bool = Field(default=False, nullable=False)
+    recurring_group_id: UUID | None = Field(default=None, index=True)
     confidence: float = Field(default=0.0, nullable=False)
     status: ExpenseStatus = Field(default=ExpenseStatus.DRAFT, nullable=False, index=True)
     source_text: str | None = Field(default=None, max_length=2000)

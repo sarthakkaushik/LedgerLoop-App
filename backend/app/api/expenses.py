@@ -4,8 +4,9 @@ from datetime import UTC, date, datetime, timedelta
 import io
 from typing import Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -417,6 +418,146 @@ def _shift_months(value: date, delta_months: int) -> date:
     return date(year, month, 1)
 
 
+def _resolve_dashboard_today(
+    *,
+    client_timezone: str | None,
+    client_timezone_header: str | None,
+) -> date:
+    timezone_name = (
+        _clean_optional_text(client_timezone) or _clean_optional_text(client_timezone_header)
+    )
+    if timezone_name:
+        try:
+            return datetime.now(ZoneInfo(timezone_name)).date()
+        except (ValueError, ZoneInfoNotFoundError):
+            pass
+    return datetime.now(UTC).date()
+
+
+def _build_recurring_signature(expense: Expense) -> tuple:
+    return (
+        str(expense.logged_by_user_id),
+        str(expense.attributed_family_member_id) if expense.attributed_family_member_id else "",
+        expense.date_incurred.day,
+        float(expense.amount) if expense.amount is not None else None,
+        (expense.currency or "").strip().upper(),
+        _clean_optional_text(expense.category) or "",
+        _clean_optional_text(expense.subcategory) or "",
+        _clean_optional_text(expense.description) or "",
+        _clean_optional_text(expense.merchant_or_item) or "",
+    )
+
+
+async def _materialize_recurring_expenses(
+    session: AsyncSession,
+    *,
+    household_id: UUID,
+    up_to_date: date,
+) -> None:
+    target_month_start = _first_day_of_month(up_to_date)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    has_changes = False
+
+    legacy_result = await session.execute(
+        select(Expense)
+        .where(
+            Expense.household_id == household_id,
+            Expense.status == ExpenseStatus.CONFIRMED,
+            Expense.is_recurring.is_(True),
+            Expense.recurring_group_id.is_(None),
+        )
+        .order_by(Expense.date_incurred, Expense.created_at)
+    )
+    legacy_recurring = legacy_result.scalars().all()
+    signature_to_group_id: dict[tuple, UUID] = {}
+    for expense in legacy_recurring:
+        signature = _build_recurring_signature(expense)
+        group_id = signature_to_group_id.get(signature)
+        if group_id is None:
+            group_id = expense.id
+            signature_to_group_id[signature] = group_id
+        if expense.recurring_group_id != group_id:
+            expense.recurring_group_id = group_id
+            expense.updated_at = now
+            session.add(expense)
+            has_changes = True
+
+    recurring_result = await session.execute(
+        select(Expense)
+        .where(
+            Expense.household_id == household_id,
+            Expense.status == ExpenseStatus.CONFIRMED,
+            Expense.is_recurring.is_(True),
+            Expense.recurring_group_id.is_not(None),
+        )
+        .order_by(Expense.recurring_group_id, Expense.date_incurred, Expense.created_at)
+    )
+    recurring_expenses = recurring_result.scalars().all()
+    recurring_by_group: dict[UUID, list[Expense]] = defaultdict(list)
+    for expense in recurring_expenses:
+        if expense.recurring_group_id is None:
+            continue
+        recurring_by_group[expense.recurring_group_id].append(expense)
+
+    for group_id, expenses in recurring_by_group.items():
+        if not expenses:
+            continue
+        expenses.sort(key=lambda row: (row.date_incurred, row.created_at))
+        anchor_expense = expenses[0]
+        latest_expense = expenses[-1]
+        anchor_day = max(1, min(anchor_expense.date_incurred.day, 31))
+
+        latest_by_month: dict[tuple[int, int], Expense] = {}
+        for existing in expenses:
+            key = (existing.date_incurred.year, existing.date_incurred.month)
+            previous = latest_by_month.get(key)
+            if previous is None or (existing.date_incurred, existing.created_at) > (
+                previous.date_incurred,
+                previous.created_at,
+            ):
+                latest_by_month[key] = existing
+
+        cursor = _shift_months(_first_day_of_month(latest_expense.date_incurred), 1)
+        template = latest_expense
+        while cursor <= target_month_start:
+            month_key = (cursor.year, cursor.month)
+            existing_for_month = latest_by_month.get(month_key)
+            if existing_for_month is not None:
+                template = existing_for_month
+                cursor = _shift_months(cursor, 1)
+                continue
+
+            month_end_day = _last_day_of_month(cursor).day
+            due_day = min(anchor_day, month_end_day)
+            generated_date = date(cursor.year, cursor.month, due_day)
+            generated_expense = Expense(
+                household_id=template.household_id,
+                logged_by_user_id=template.logged_by_user_id,
+                attributed_family_member_id=template.attributed_family_member_id,
+                amount=template.amount,
+                currency=template.currency,
+                category=template.category,
+                subcategory=template.subcategory,
+                description=template.description,
+                merchant_or_item=template.merchant_or_item,
+                date_incurred=generated_date,
+                is_recurring=True,
+                recurring_group_id=group_id,
+                confidence=template.confidence,
+                status=ExpenseStatus.CONFIRMED,
+                source_text=template.source_text or "auto-generated recurring expense",
+                updated_at=now,
+            )
+            session.add(generated_expense)
+            latest_by_month[month_key] = generated_expense
+            template = generated_expense
+            has_changes = True
+            cursor = _shift_months(cursor, 1)
+
+    if has_changes:
+        await session.commit()
+
+
 @router.post("/log", response_model=ExpenseLogResponse)
 async def log_expenses(
     payload: ExpenseLogRequest,
@@ -735,6 +876,12 @@ async def confirm_expenses(
                 detail=f"Amount is required before confirmation for draft_id '{expense.id}'",
             )
 
+        if expense.is_recurring:
+            if expense.recurring_group_id is None:
+                expense.recurring_group_id = expense.id
+        else:
+            expense.recurring_group_id = None
+
         expense.status = ExpenseStatus.CONFIRMED
         expense.idempotency_key = idempotency_key
         expense.updated_at = now
@@ -837,6 +984,7 @@ async def create_recurring_expense(
         source_text="manual recurring expense",
         updated_at=now,
     )
+    expense.recurring_group_id = expense.id
     session.add(expense)
     await session.commit()
     await session.refresh(expense)
@@ -874,6 +1022,11 @@ async def list_expenses(
     await ensure_linked_family_members_for_household(
         session,
         household_id=user.household_id,
+    )
+    await _materialize_recurring_expenses(
+        session,
+        household_id=user.household_id,
+        up_to_date=datetime.now(UTC).date(),
     )
     filters = _build_expense_filters(
         user.household_id,
@@ -944,6 +1097,11 @@ async def export_expenses_csv(
     await ensure_linked_family_members_for_household(
         session,
         household_id=user.household_id,
+    )
+    await _materialize_recurring_expenses(
+        session,
+        household_id=user.household_id,
+        up_to_date=datetime.now(UTC).date(),
     )
     filters = _build_expense_filters(
         user.household_id,
@@ -1208,9 +1366,31 @@ async def update_expense_recurring(
             detail="You can only update recurring flag for expenses you logged.",
         )
 
-    expense.is_recurring = payload.is_recurring
-    expense.updated_at = datetime.now(UTC).replace(tzinfo=None)
-    session.add(expense)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if payload.is_recurring:
+        expense.is_recurring = True
+        if expense.recurring_group_id is None:
+            expense.recurring_group_id = expense.id
+        expense.updated_at = now
+        session.add(expense)
+    else:
+        if expense.recurring_group_id is not None:
+            related_result = await session.execute(
+                select(Expense).where(
+                    Expense.household_id == user.household_id,
+                    Expense.recurring_group_id == expense.recurring_group_id,
+                )
+            )
+            for related in related_result.scalars().all():
+                related.is_recurring = False
+                related.recurring_group_id = None
+                related.updated_at = now
+                session.add(related)
+        else:
+            expense.is_recurring = False
+            expense.recurring_group_id = None
+            expense.updated_at = now
+            session.add(expense)
     await session.commit()
     await session.refresh(expense)
 
@@ -1237,7 +1417,7 @@ async def update_expense_recurring(
     message = (
         "Expense marked as recurring."
         if payload.is_recurring
-        else "Expense removed from recurring."
+        else "Recurring series stopped."
     )
     return ExpenseRecurringUpdateResponse(
         item=_to_expense_feed_item(
@@ -1295,6 +1475,8 @@ async def delete_expense(
 @router.get("/dashboard", response_model=ExpenseDashboardResponse)
 async def get_expense_dashboard(
     months_back: int = Query(default=6, ge=1, le=24),
+    client_timezone: str | None = Query(default=None),
+    client_timezone_header: str | None = Header(default=None, alias="X-Client-Timezone"),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ExpenseDashboardResponse:
@@ -1302,7 +1484,15 @@ async def get_expense_dashboard(
         session,
         household_id=user.household_id,
     )
-    today = datetime.now(UTC).date()
+    today = _resolve_dashboard_today(
+        client_timezone=client_timezone,
+        client_timezone_header=client_timezone_header,
+    )
+    await _materialize_recurring_expenses(
+        session,
+        household_id=user.household_id,
+        up_to_date=today,
+    )
     period_start = _first_day_of_month(today)
     period_end = _last_day_of_month(today)
 

@@ -24,6 +24,7 @@ async def init_db() -> None:
         await conn.run_sync(_ensure_user_is_active_column)
         await conn.run_sync(_ensure_expense_subcategory_column)
         await conn.run_sync(_ensure_expense_attributed_family_member_column)
+        await conn.run_sync(_ensure_expense_recurring_group_column)
         await conn.run_sync(_ensure_household_monthly_budget_column)
 
 
@@ -84,6 +85,32 @@ def _ensure_expense_attributed_family_member_column(sync_conn) -> None:
         sync_conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_expenses_attributed_family_member_id "
             "ON expenses (attributed_family_member_id)"
+        )
+
+
+def _ensure_expense_recurring_group_column(sync_conn) -> None:
+    inspector = inspect(sync_conn)
+    table_names = set(inspector.get_table_names())
+    if "expenses" not in table_names:
+        return
+
+    column_names = {column["name"] for column in inspector.get_columns("expenses")}
+    if "recurring_group_id" not in column_names:
+        dialect = sync_conn.dialect.name
+        if dialect == "postgresql":
+            sync_conn.exec_driver_sql(
+                "ALTER TABLE expenses ADD COLUMN recurring_group_id UUID"
+            )
+        else:
+            sync_conn.exec_driver_sql(
+                "ALTER TABLE expenses ADD COLUMN recurring_group_id VARCHAR(36)"
+            )
+
+    index_names = {index.get("name", "") for index in inspector.get_indexes("expenses")}
+    if "ix_expenses_recurring_group_id" not in index_names:
+        sync_conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_expenses_recurring_group_id "
+            "ON expenses (recurring_group_id)"
         )
 
 
