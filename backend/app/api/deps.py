@@ -7,6 +7,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.core.config import get_settings
 from app.core.db import get_session
 from app.models.expense import Expense
 from app.models.family_member import FamilyMember
@@ -22,6 +23,7 @@ from app.services.family_member_service import ensure_linked_family_members_for_
 from app.services.llm.types import ParseContext
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+settings = get_settings()
 
 
 def _today_for_timezone(timezone_name: str) -> date:
@@ -57,6 +59,17 @@ async def get_current_admin(user: User = Depends(get_current_user)) -> User:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only household admin can perform this action",
+        )
+    return user
+
+
+async def get_current_super_admin(user: User = Depends(get_current_user)) -> User:
+    configured_email = settings.admin_panel_email.strip().lower()
+    current_email = str(user.email).strip().lower()
+    if not configured_email or current_email != configured_email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin panel access is restricted.",
         )
     return user
 

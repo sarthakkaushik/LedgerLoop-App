@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24 * 7
     database_url: str = "sqlite+aiosqlite:///./expense_tracker.db"
     cors_allow_origins: str = "http://localhost:5173"
+    admin_panel_email: str = "sarthak.kaushik.17@gmail.com"
     llm_provider: str = "mock"
     llm_model: str = "mock-expense-parser-v1"
     llm_default_currency: str = "INR"

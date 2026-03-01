@@ -13,6 +13,7 @@ from app.models.family_member import FamilyMember
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.household import Household
 from app.models.user import User, UserRole
+from app.models.user_login_event import UserLoginEvent
 from app.schemas.auth import (
     AuthResponse,
     DeleteMemberResponse,
@@ -30,6 +31,16 @@ from app.schemas.auth import (
 from app.services.taxonomy_service import seed_default_household_taxonomy
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _record_login_event(session: AsyncSession, user: User, auth_method: str) -> None:
+    session.add(
+        UserLoginEvent(
+            user_id=user.id,
+            household_id=user.household_id,
+            auth_method=auth_method,
+        )
+    )
 
 
 async def to_user_response(session: AsyncSession, user: User) -> UserResponse:
@@ -120,6 +131,7 @@ async def register(
         household_id=household.id,
         created_by_user_id=user.id,
     )
+    _record_login_event(session, user, "register")
     await session.commit()
     await session.refresh(user)
 
@@ -136,6 +148,8 @@ async def login(
     session: AsyncSession = Depends(get_session),
 ) -> AuthResponse:
     user = await authenticate_user(session, payload.email, payload.password)
+    _record_login_event(session, user, "login")
+    await session.commit()
     token = create_access_token(str(user.id))
     return AuthResponse(
         token=TokenResponse(access_token=token),
@@ -150,6 +164,8 @@ async def token(
 ) -> TokenResponse:
     # For OAuth2 password flow, username field is used to carry email.
     user = await authenticate_user(session, form_data.username, form_data.password)
+    _record_login_event(session, user, "token")
+    await session.commit()
     access_token = create_access_token(str(user.id))
     return TokenResponse(access_token=access_token)
 
@@ -213,6 +229,7 @@ async def join_household(
         role=UserRole.MEMBER,
     )
     session.add(user)
+    _record_login_event(session, user, "join")
     await session.commit()
     await session.refresh(user)
 

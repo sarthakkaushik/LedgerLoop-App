@@ -188,7 +188,13 @@ export async function confirmExpenses(token, payload) {
 }
 
 export async function fetchDashboard(token, monthsBack = 6) {
-  return apiRequest(`/expenses/dashboard?months_back=${monthsBack}`, { token });
+  const search = new URLSearchParams({ months_back: String(monthsBack) });
+  const timezone =
+    typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "";
+  if (timezone) {
+    search.set("client_timezone", timezone);
+  }
+  return apiRequest(`/expenses/dashboard?${search.toString()}`, { token });
 }
 
 export async function fetchExpenseFeed(
@@ -260,6 +266,66 @@ export async function downloadExpenseCsv(
 
   const blob = await response.blob();
   const filename = parseDownloadFilename(response.headers.get("Content-Disposition"));
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+export async function fetchAdminOverview(token) {
+  return apiRequest("/admin/overview", { token });
+}
+
+export async function fetchAdminSchema(token) {
+  return apiRequest("/admin/schema", { token });
+}
+
+export async function downloadAdminAllData(token) {
+  const response = await fetch(`${getApiBaseUrl()}/admin/export/all.zip`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(parseErrorPayload(data));
+  }
+
+  const blob = await response.blob();
+  const filename = parseDownloadFilename(response.headers.get("Content-Disposition")) || "all_tables.zip";
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+export async function downloadAdminTableCsv(token, tableName) {
+  const normalizedTable = String(tableName || "").trim().toLowerCase();
+  if (!normalizedTable) {
+    throw new Error("Table name is required.");
+  }
+  const response = await fetch(
+    `${getApiBaseUrl()}/admin/export/${encodeURIComponent(normalizedTable)}.csv`,
+    {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(parseErrorPayload(data));
+  }
+
+  const blob = await response.blob();
+  const filename =
+    parseDownloadFilename(response.headers.get("Content-Disposition")) || `${normalizedTable}.csv`;
   const url = window.URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;

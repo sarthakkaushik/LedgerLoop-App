@@ -16,6 +16,7 @@ from app.models import household_category as _household_category  # noqa: F401
 from app.models import household_subcategory as _household_subcategory  # noqa: F401
 from app.models import llm_setting as _llm_setting  # noqa: F401
 from app.models import user as _user  # noqa: F401
+from app.models import user_login_event as _user_login_event  # noqa: F401
 
 
 @pytest.fixture

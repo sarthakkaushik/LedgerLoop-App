@@ -7,6 +7,7 @@ from app.models.household_category import HouseholdCategory
 from app.models.household_subcategory import HouseholdSubcategory
 from app.models.llm_setting import LLMProvider, LLMSetting
 from app.models.user import User, UserRole
+from app.models.user_login_event import UserLoginEvent
 
 __all__ = [
     "AnalysisQuery",
@@ -22,4 +23,5 @@ __all__ = [
     "LLMSetting",
     "User",
     "UserRole",
+    "UserLoginEvent",
 ]

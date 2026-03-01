@@ -12,11 +12,15 @@ import {
   createInviteCode,
   deleteTaxonomyCategory,
   deleteTaxonomySubcategory,
+  downloadAdminAllData,
+  downloadAdminTableCsv,
   deleteExpense,
   deleteFamilyMemberProfile,
   updateExpense,
   deleteHouseholdMember,
   downloadExpenseCsv,
+  fetchAdminOverview,
+  fetchAdminSchema,
   fetchDashboard,
   fetchExpenseFeed,
   fetchFamilyMembers,
@@ -42,6 +46,7 @@ const tabs = [
   { id: "recurring", label: "Recurring" },
   { id: "people", label: "People & Access" },
 ];
+const ADMIN_PANEL_EMAIL = "sarthak.kaushik.17@gmail.com";
 
 function TabIcon({ tabId }) {
   if (tabId === "capture") {
@@ -69,6 +74,13 @@ function TabIcon({ tabId }) {
     return (
       <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
         <path d="M4 19a1 1 0 0 1-1-1V6a1 1 0 1 1 2 0v11h15a1 1 0 1 1 0 2H4Zm3-4.2a1 1 0 0 1-.7-1.72l2.6-2.6a1 1 0 0 1 1.4 0l1.7 1.7 3.3-3.3a1 1 0 0 1 1.41 1.41l-4 4a1 1 0 0 1-1.4 0l-1.7-1.7-1.9 1.9a1 1 0 0 1-.7.3Z" />
+      </svg>
+    );
+  }
+  if (tabId === "admin") {
+    return (
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M12 2a2 2 0 0 1 2 2v.78a7.97 7.97 0 0 1 2.86 1.18l.55-.55a2 2 0 1 1 2.83 2.83l-.55.55A7.97 7.97 0 0 1 20.22 10H21a2 2 0 1 1 0 4h-.78a7.97 7.97 0 0 1-1.18 2.86l.55.55a2 2 0 1 1-2.83 2.83l-.55-.55A7.97 7.97 0 0 1 14 20.22V21a2 2 0 1 1-4 0v-.78a7.97 7.97 0 0 1-2.86-1.18l-.55.55a2 2 0 1 1-2.83-2.83l.55-.55A7.97 7.97 0 0 1 3.78 14H3a2 2 0 1 1 0-4h.78a7.97 7.97 0 0 1 1.18-2.86l-.55-.55a2 2 0 1 1 2.83-2.83l.55.55A7.97 7.97 0 0 1 10 3.78V3a2 2 0 0 1 2-1Zm0 5a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0 2a3 3 0 0 1 2.95 2.45.75.75 0 0 1-1.48.3A1.5 1.5 0 1 0 13.5 13a.75.75 0 0 1 1.5 0A3 3 0 1 1 12 9Z" />
       </svg>
     );
   }
@@ -5597,6 +5609,21 @@ function formatDateValue(value) {
   });
 }
 
+function formatDateTimeValue(value) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function parseYearMonthValue(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
@@ -5930,6 +5957,320 @@ function InsightsPanel({ token, activeView, onGoToLedger, onGoToRecurring, onOpe
   );
 }
 
+function AdminPanel({ token }) {
+  const [overview, setOverview] = useState(null);
+  const [schemaMap, setSchemaMap] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [downloadError, setDownloadError] = useState("");
+  const [downloadNotice, setDownloadNotice] = useState("");
+  const [allDownloadInFlight, setAllDownloadInFlight] = useState(false);
+  const [tableDownloadInFlight, setTableDownloadInFlight] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAdminData() {
+      setLoading(true);
+      setError("");
+      try {
+        const [overviewData, schemaData] = await Promise.all([
+          fetchAdminOverview(token),
+          fetchAdminSchema(token),
+        ]);
+        if (!cancelled) {
+          setOverview(overviewData);
+          setSchemaMap(schemaData);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message || "Unable to load admin data.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+    loadAdminData();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, refreshTick]);
+
+  const users = Array.isArray(overview?.users) ? overview.users : [];
+  const households = Array.isArray(overview?.households) ? overview.households : [];
+  const tables = Array.isArray(overview?.tables) ? overview.tables : [];
+  const schemaTables = Array.isArray(schemaMap?.tables) ? schemaMap.tables : [];
+  const schemaRelations = Array.isArray(schemaMap?.relations) ? schemaMap.relations : [];
+
+  async function handleDownloadAll() {
+    setDownloadError("");
+    setDownloadNotice("");
+    setAllDownloadInFlight(true);
+    try {
+      await downloadAdminAllData(token);
+      setDownloadNotice("All database tables were downloaded successfully.");
+    } catch (err) {
+      setDownloadError(err.message || "Failed to download all tables.");
+    } finally {
+      setAllDownloadInFlight(false);
+    }
+  }
+
+  async function handleDownloadTable(tableName) {
+    setDownloadError("");
+    setDownloadNotice("");
+    setTableDownloadInFlight(tableName);
+    try {
+      await downloadAdminTableCsv(token, tableName);
+      setDownloadNotice(`Downloaded table: ${tableName}.`);
+    } catch (err) {
+      setDownloadError(err.message || `Failed to download ${tableName}.`);
+    } finally {
+      setTableDownloadInFlight("");
+    }
+  }
+
+  return (
+    <section className="panel admin-panel-shell">
+      <article className="admin-banner">
+        <div>
+          <p className="kicker">Restricted Access</p>
+          <h2>Platform Admin Control Center</h2>
+          <p className="hint">
+            This screen is visible only for <code>{ADMIN_PANEL_EMAIL}</code>.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={() => setRefreshTick((previous) => previous + 1)}
+          disabled={loading}
+        >
+          {loading ? "Refreshing..." : "Refresh Data"}
+        </button>
+      </article>
+
+      {error ? <p className="form-error">{error}</p> : null}
+      {!error && loading && <PanelSkeleton rows={4} />}
+
+      {!loading && !error && (
+        <>
+          <div className="stats-grid admin-stats-grid">
+            <article className="stat-card">
+              <h3>Total Users</h3>
+              <strong>{overview?.total_users ?? 0}</strong>
+              <small>{overview?.active_users ?? 0} active users</small>
+            </article>
+            <article className="stat-card">
+              <h3>Total Households</h3>
+              <strong>{overview?.total_households ?? 0}</strong>
+              <small>Across all registered family groups</small>
+            </article>
+            <article className="stat-card">
+              <h3>Total Family Members</h3>
+              <strong>{overview?.total_family_members ?? 0}</strong>
+              <small>Profiles across all households</small>
+            </article>
+            <article className="stat-card">
+              <h3>Total Expense Entries</h3>
+              <strong>{overview?.total_expenses ?? 0}</strong>
+              <small>Logged by all users</small>
+            </article>
+          </div>
+
+          <article className="admin-section-card">
+            <div className="admin-section-header">
+              <div>
+                <p className="kicker">User Behavior</p>
+                <h3>User activity and last login</h3>
+              </div>
+            </div>
+            <div className="table-wrap desktop-table-only">
+              <table className="analytics-table">
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Household</th>
+                    <th>Role</th>
+                    <th>Last Login</th>
+                    <th>Entries</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((user) => (
+                    <tr key={user.user_id}>
+                      <td>
+                        <div className="admin-user-cell">
+                          <strong>{user.full_name}</strong>
+                          <small>{user.email}</small>
+                        </div>
+                      </td>
+                      <td>{user.household_name}</td>
+                      <td>
+                        <span className={user.is_active ? "status-pill confirmed compact" : "status-pill draft compact"}>
+                          {user.role}
+                        </span>
+                      </td>
+                      <td>{user.last_login_at ? formatDateTimeValue(user.last_login_at) : "Never"}</td>
+                      <td>{user.expense_entries_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mobile-data-list mobile-cards-only">
+              {users.map((user) => (
+                <article className="mobile-data-card" key={`admin-user-${user.user_id}`}>
+                  <p className="mobile-data-card-title">{user.full_name}</p>
+                  <div className="mobile-data-row">
+                    <span className="mobile-data-label">Email</span>
+                    <span className="mobile-data-value">{user.email}</span>
+                  </div>
+                  <div className="mobile-data-row">
+                    <span className="mobile-data-label">Household</span>
+                    <span className="mobile-data-value">{user.household_name}</span>
+                  </div>
+                  <div className="mobile-data-row">
+                    <span className="mobile-data-label">Entries</span>
+                    <span className="mobile-data-value">{user.expense_entries_count}</span>
+                  </div>
+                  <div className="mobile-data-row">
+                    <span className="mobile-data-label">Last Login</span>
+                    <span className="mobile-data-value">
+                      {user.last_login_at ? formatDateTimeValue(user.last_login_at) : "Never"}
+                    </span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </article>
+
+          <article className="admin-section-card">
+            <div className="admin-section-header">
+              <div>
+                <p className="kicker">Family Groups</p>
+                <h3>Household-level member and expense counts</h3>
+              </div>
+            </div>
+            <div className="table-wrap">
+              <table className="analytics-table">
+                <thead>
+                  <tr>
+                    <th>Household</th>
+                    <th>Users</th>
+                    <th>Family Members</th>
+                    <th>Entries</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {households.map((household) => (
+                    <tr key={household.household_id}>
+                      <td>{household.household_name}</td>
+                      <td>{household.user_count}</td>
+                      <td>{household.family_member_count}</td>
+                      <td>{household.expense_count}</td>
+                      <td>{formatDateValue(household.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="admin-section-card">
+            <div className="admin-section-header">
+              <div>
+                <p className="kicker">Database Export</p>
+                <h3>Download all tables with full data</h3>
+              </div>
+              <button
+                type="button"
+                className="btn-main"
+                onClick={handleDownloadAll}
+                disabled={allDownloadInFlight}
+              >
+                {allDownloadInFlight ? "Preparing ZIP..." : "Download All Tables (.zip)"}
+              </button>
+            </div>
+            {downloadError ? <p className="form-error">{downloadError}</p> : null}
+            {downloadNotice ? <p className="form-ok">{downloadNotice}</p> : null}
+            <div className="table-wrap">
+              <table className="analytics-table">
+                <thead>
+                  <tr>
+                    <th>Table</th>
+                    <th>Rows</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tables.map((table) => (
+                    <tr key={table.table_name}>
+                      <td>{table.table_name}</td>
+                      <td>{table.row_count}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn-ghost admin-table-download"
+                          onClick={() => handleDownloadTable(table.table_name)}
+                          disabled={tableDownloadInFlight === table.table_name}
+                        >
+                          {tableDownloadInFlight === table.table_name ? "Downloading..." : "Download CSV"}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="admin-section-card">
+            <div className="admin-section-header">
+              <div>
+                <p className="kicker">Schema Map</p>
+                <h3>How each table is connected</h3>
+              </div>
+            </div>
+
+            <div className="admin-relations-list">
+              {schemaRelations.map((relation) => (
+                <p className="admin-relation-pill" key={`${relation.from_table}-${relation.from_column}-${relation.to_table}-${relation.to_column}`}>
+                  <strong>{relation.from_table}</strong>.{relation.from_column}
+                  <span aria-hidden="true"> &#8594; </span>
+                  <strong>{relation.to_table}</strong>.{relation.to_column}
+                </p>
+              ))}
+            </div>
+
+            <div className="admin-schema-grid">
+              {schemaTables.map((table) => (
+                <article className="admin-schema-card" key={table.table_name}>
+                  <p className="admin-schema-title">{table.table_name}</p>
+                  <div className="admin-schema-columns">
+                    {table.columns.slice(0, 8).map((column) => (
+                      <code key={`${table.table_name}-${column.name}`}>
+                        {column.is_primary_key ? "PK " : ""}
+                        {column.name}
+                      </code>
+                    ))}
+                    {table.columns.length > 8 ? (
+                      <small>+{table.columns.length - 8} more columns</small>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </article>
+        </>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [auth, setAuth] = useState(() => {
     const token = safeStorageGet("expense_auth_token");
@@ -5948,6 +6289,11 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => safeStorageGet("expense_workspace_sidebar_collapsed") === "1"
   );
+  const canSeeAdmin = String(auth?.user?.email || "").trim().toLowerCase() === ADMIN_PANEL_EMAIL;
+  const visibleTabs = useMemo(() => {
+    if (!canSeeAdmin) return tabs;
+    return [...tabs, { id: "admin", label: "Admin" }];
+  }, [canSeeAdmin]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -6029,10 +6375,16 @@ export default function App() {
     safeStorageSet("expense_workspace_sidebar_collapsed", sidebarCollapsed ? "1" : "0");
   }, [sidebarCollapsed]);
 
+  useEffect(() => {
+    if (!canSeeAdmin && activeTab === "admin") {
+      setActiveTab("insights");
+    }
+  }, [activeTab, canSeeAdmin]);
+
   const tabLabel = useMemo(() => {
     if (activeTab === "settings") return "Settings";
-    return tabs.find((tab) => tab.id === activeTab)?.label ?? "Dashboard";
-  }, [activeTab]);
+    return visibleTabs.find((tab) => tab.id === activeTab)?.label ?? "Dashboard";
+  }, [activeTab, visibleTabs]);
 
   if (!auth?.token) {
     return (
@@ -6088,7 +6440,7 @@ export default function App() {
               </span>
             </button>
             <p className="kicker">Workspace</p>
-            {tabs.map((tab) => (
+            {visibleTabs.map((tab) => (
               <button
                 type="button"
                 key={tab.id}
@@ -6134,6 +6486,7 @@ export default function App() {
               />
             )}
             {activeTab === "people" && <HouseholdPanel token={auth.token} user={auth.user} />}
+            {activeTab === "admin" && canSeeAdmin && <AdminPanel token={auth.token} />}
             {activeTab === "settings" && (
               <SettingsPanel
                 token={auth.token}
