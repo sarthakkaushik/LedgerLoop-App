@@ -6621,7 +6621,7 @@ export default function App() {
 
   return (
     <RuntimeErrorBoundary>
-      <main className={activeTab === "insights" ? "app-shell app-shell-unified app-shell-dashboard" : "app-shell app-shell-unified"}>
+      <main className="app-shell app-shell-unified">
         <ToastNotice message={globalNotice} placement="top-right" />
         <Header
           user={auth.user}
@@ -6779,4 +6779,3 @@ function Header({ user, onQuickAdd, onOpenSettings, settingsActive = false, onLo
     </header>
   );
 }
-
