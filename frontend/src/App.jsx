@@ -47,6 +47,11 @@ const tabs = [
   { id: "people", label: "People & Access" },
 ];
 const ADMIN_PANEL_EMAIL = "sarthak.kaushik.17@gmail.com";
+const DASHBOARD_VIEW_OPTIONS = [
+  { id: "month", label: "Current month" },
+  { id: "week", label: "Last 4 weeks" },
+  { id: "year", label: "This year" },
+];
 
 function TabIcon({ tabId }) {
   if (tabId === "capture") {
@@ -4546,6 +4551,224 @@ function shiftMonthKey(monthKey, deltaMonths) {
   return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function formatIsoDateKey(value) {
+  const date =
+    value instanceof Date
+      ? new Date(value.getFullYear(), value.getMonth(), value.getDate())
+      : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDaysToDate(value, dayCount) {
+  const base =
+    value instanceof Date
+      ? new Date(value.getFullYear(), value.getMonth(), value.getDate())
+      : new Date(value);
+  if (Number.isNaN(base.getTime())) return new Date(Number.NaN);
+  base.setDate(base.getDate() + Number(dayCount || 0));
+  return base;
+}
+
+function startOfMonthDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date(Number.NaN);
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function endOfMonthDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date(Number.NaN);
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0);
+}
+
+function startOfYearDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date(Number.NaN);
+  return new Date(date.getFullYear(), 0, 1);
+}
+
+function endOfYearDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date(Number.NaN);
+  return new Date(date.getFullYear(), 11, 31);
+}
+
+function getInclusiveDayCount(startValue, endValue) {
+  const startDate = startValue instanceof Date ? startValue : new Date(startValue);
+  const endDate = endValue instanceof Date ? endValue : new Date(endValue);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 0;
+  const diffMs = Math.max(endDate.getTime() - startDate.getTime(), 0);
+  return Math.floor(diffMs / 86400000) + 1;
+}
+
+function minDateValue(leftValue, rightValue) {
+  const left = leftValue instanceof Date ? leftValue : new Date(leftValue);
+  const right = rightValue instanceof Date ? rightValue : new Date(rightValue);
+  if (Number.isNaN(left.getTime())) return right;
+  if (Number.isNaN(right.getTime())) return left;
+  return left.getTime() <= right.getTime() ? left : right;
+}
+
+function buildDashboardPeriodConfig(viewMode, referenceDate) {
+  const safeReference =
+    referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
+      ? new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate())
+      : new Date();
+
+  if (viewMode === "week") {
+    const periodEndDate = safeReference;
+    const periodStartDate = addDaysToDate(periodEndDate, -27);
+    return {
+      viewMode: "week",
+      modeLabel: "Last 4 weeks",
+      trendTitle: "Week-by-Week Spending Pattern",
+      trendEmptyLabel: "No weekly spend data for this window.",
+      chartAriaLabel: "Week-by-week spending vertical bar chart",
+      comparisonLabel: "vs previous 4 weeks",
+      periodStart: formatIsoDateKey(periodStartDate),
+      periodEnd: formatIsoDateKey(periodEndDate),
+      previousPeriodStart: formatIsoDateKey(addDaysToDate(periodStartDate, -28)),
+      previousPeriodEnd: formatIsoDateKey(addDaysToDate(periodEndDate, -28)),
+    };
+  }
+
+  if (viewMode === "year") {
+    const periodStartDate = startOfYearDate(safeReference);
+    const periodEndDate = safeReference;
+    const elapsedDays = getInclusiveDayCount(periodStartDate, periodEndDate);
+    const previousPeriodStartDate = new Date(safeReference.getFullYear() - 1, 0, 1);
+    const previousPeriodEndDate = minDateValue(
+      addDaysToDate(previousPeriodStartDate, elapsedDays - 1),
+      endOfYearDate(previousPeriodStartDate)
+    );
+    return {
+      viewMode: "year",
+      modeLabel: "This year",
+      trendTitle: "Month-by-Month Spending Pattern",
+      trendEmptyLabel: "No yearly spend data for this window.",
+      chartAriaLabel: "Month-by-month spending vertical bar chart",
+      comparisonLabel: "vs previous year",
+      periodStart: formatIsoDateKey(periodStartDate),
+      periodEnd: formatIsoDateKey(periodEndDate),
+      previousPeriodStart: formatIsoDateKey(previousPeriodStartDate),
+      previousPeriodEnd: formatIsoDateKey(previousPeriodEndDate),
+    };
+  }
+
+  const periodStartDate = startOfMonthDate(safeReference);
+  const periodEndDate = safeReference;
+  const elapsedDays = getInclusiveDayCount(periodStartDate, periodEndDate);
+  const previousMonthReference = addDaysToDate(periodStartDate, -1);
+  const previousPeriodStartDate = startOfMonthDate(previousMonthReference);
+  const previousPeriodEndDate = minDateValue(
+    addDaysToDate(previousPeriodStartDate, elapsedDays - 1),
+    endOfMonthDate(previousPeriodStartDate)
+  );
+  return {
+    viewMode: "month",
+    modeLabel: "Current month",
+    trendTitle: "Week-by-Week Spending Pattern",
+    trendEmptyLabel: "No month-to-date spend data for this window.",
+    chartAriaLabel: "Week-by-week spending vertical bar chart",
+    comparisonLabel: "vs previous month",
+    periodStart: formatIsoDateKey(periodStartDate),
+    periodEnd: formatIsoDateKey(periodEndDate),
+    previousPeriodStart: formatIsoDateKey(previousPeriodStartDate),
+    previousPeriodEnd: formatIsoDateKey(previousPeriodEndDate),
+  };
+}
+
+function sumExpensesWithinRange(items, startIso, endIso) {
+  return (Array.isArray(items) ? items : []).reduce((sum, expense) => {
+    const amount = parseNumeric(expense?.amount);
+    const dateIncurred = String(expense?.date_incurred || "").trim();
+    if (amount === null || !dateIncurred || dateIncurred < startIso || dateIncurred > endIso) {
+      return sum;
+    }
+    return sum + amount;
+  }, 0);
+}
+
+function buildDashboardTrendSeries(items, viewMode, referenceDate) {
+  const safeReference =
+    referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
+      ? new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate())
+      : new Date();
+  const trendPoints = [];
+
+  if (viewMode === "week") {
+    const startDate = addDaysToDate(safeReference, -27);
+    for (let index = 0; index < 4; index += 1) {
+      const pointStartDate = addDaysToDate(startDate, index * 7);
+      const pointEndDate = addDaysToDate(pointStartDate, 6);
+      const pointStart = formatIsoDateKey(pointStartDate);
+      const pointEnd = formatIsoDateKey(pointEndDate);
+      trendPoints.push({
+        key: pointStart,
+        label: `Week ${index + 1}`,
+        tooltip: `${formatDateValue(pointStart)} - ${formatDateValue(pointEnd)}`,
+        total: Number(sumExpensesWithinRange(items, pointStart, pointEnd).toFixed(2)),
+      });
+    }
+    return trendPoints;
+  }
+
+  if (viewMode === "year") {
+    const year = safeReference.getFullYear();
+    const currentMonth = safeReference.getMonth();
+    for (let monthIndex = 0; monthIndex <= currentMonth; monthIndex += 1) {
+      const pointStartDate = new Date(year, monthIndex, 1);
+      const pointEndDate =
+        monthIndex === currentMonth ? safeReference : endOfMonthDate(pointStartDate);
+      const pointStart = formatIsoDateKey(pointStartDate);
+      const pointEnd = formatIsoDateKey(pointEndDate);
+      trendPoints.push({
+        key: `${year}-${String(monthIndex + 1).padStart(2, "0")}`,
+        label: formatMonthYearValue(pointStartDate, { monthStyle: "short", separator: " " }),
+        tooltip: formatMonthYearValue(pointStartDate),
+        total: Number(sumExpensesWithinRange(items, pointStart, pointEnd).toFixed(2)),
+      });
+    }
+    return trendPoints;
+  }
+
+  const monthStartDate = startOfMonthDate(safeReference);
+  let cursor = monthStartDate;
+  let weekIndex = 1;
+  while (cursor.getTime() <= safeReference.getTime()) {
+    const pointStartDate = cursor;
+    const pointEndDate = minDateValue(addDaysToDate(pointStartDate, 6), safeReference);
+    const pointStart = formatIsoDateKey(pointStartDate);
+    const pointEnd = formatIsoDateKey(pointEndDate);
+    trendPoints.push({
+      key: pointStart,
+      label: `Week ${weekIndex}`,
+      tooltip: `${formatDateValue(pointStart)} - ${formatDateValue(pointEnd)}`,
+      total: Number(sumExpensesWithinRange(items, pointStart, pointEnd).toFixed(2)),
+    });
+    cursor = addDaysToDate(pointEndDate, 1);
+    weekIndex += 1;
+  }
+  return trendPoints;
+}
+
+function resolveExpensePersonIdentity(expense) {
+  const memberName =
+    String(expense?.attributed_family_member_name || expense?.logged_by_name || "Unknown").trim() ||
+    "Unknown";
+  const normalizedName = normalizeTaxonomyName(memberName);
+  const memberId = String(expense?.attributed_family_member_id || "").trim();
+  const userId = String(expense?.logged_by_user_id || "").trim();
+  return {
+    key: normalizedName || memberId || userId || "unknown",
+    name: memberName,
+  };
+}
+
 function formatMonthOverMonthDelta(
   currentValue,
   previousValue,
@@ -4573,7 +4796,7 @@ function DashboardPanel({
   onGoToRecurring,
   onOpenSettings,
 }) {
-  const [monthsBack, setMonthsBack] = useState(6);
+  const [viewMode, setViewMode] = useState("month");
   const [dashboard, setDashboard] = useState(null);
   const [totalBudget, setTotalBudget] = useState(DEFAULT_MONTHLY_BUDGET);
   const [categoryFeed, setCategoryFeed] = useState({ items: [], total_count: 0 });
@@ -4592,7 +4815,7 @@ function DashboardPanel({
       setLoading(true);
       setError("");
       try {
-        const data = await fetchDashboard(token, monthsBack);
+        const data = await fetchDashboard(token, 1);
         if (!cancelled) {
           setDashboard(data);
         }
@@ -4610,7 +4833,7 @@ function DashboardPanel({
     return () => {
       cancelled = true;
     };
-  }, [monthsBack, token]);
+  }, [token]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4659,44 +4882,36 @@ function DashboardPanel({
     return () => {
       cancelled = true;
     };
-  }, [monthsBack, token]);
+  }, [token]);
 
   useEffect(() => {
     setExpandedCategoryKey("");
     setExpandedPersonKey("");
     setActivePieSliceKey("");
     setHoveredPieSliceKey("");
-  }, [monthsBack, dashboard?.period_month]);
+  }, [viewMode, dashboard?.period_month]);
 
   const dashboardPeriodMonth = String(dashboard?.period_month || "").trim();
-  const periodStart = String(dashboard?.period_start || "").trim();
-  const periodEnd = String(dashboard?.period_end || "").trim();
 
-  const monthlyTrendSeries = useMemo(() => {
-    const trend = Array.isArray(dashboard?.monthly_trend) ? dashboard.monthly_trend : [];
-    return trend
-      .map((entry) => ({
-        month: String(entry?.month || "").trim(),
-        total: Number(entry?.total || 0),
-      }))
-      .filter((entry) => Boolean(entry.month));
-  }, [dashboard?.monthly_trend]);
+  const dashboardReferenceDate = useMemo(() => {
+    const raw = String(dashboard?.period_end || "").trim();
+    if (raw) {
+      const parsed = new Date(`${raw}T12:00:00`);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+    return new Date();
+  }, [dashboard?.period_end]);
 
-  const trendWindowStartMonth =
-    monthlyTrendSeries[0]?.month || dashboardPeriodMonth;
-  const trendWindowEndMonth =
-    monthlyTrendSeries[monthlyTrendSeries.length - 1]?.month || dashboardPeriodMonth;
+  const periodConfig = useMemo(() => {
+    return buildDashboardPeriodConfig(viewMode, dashboardReferenceDate);
+  }, [dashboardReferenceDate, viewMode]);
 
-  const trendWindowStart = useMemo(() => {
-    return buildMonthRange(trendWindowStartMonth);
-  }, [trendWindowStartMonth]);
-
-  const trendWindowEnd = useMemo(() => {
-    return buildMonthRange(trendWindowEndMonth);
-  }, [trendWindowEndMonth]);
-
-  const effectivePeriodStart = String(trendWindowStart?.start || periodStart).trim();
-  const effectivePeriodEnd = String(trendWindowEnd?.end || periodEnd).trim();
+  const effectivePeriodStart = String(periodConfig?.periodStart || "").trim();
+  const effectivePeriodEnd = String(periodConfig?.periodEnd || "").trim();
+  const previousPeriodStart = String(periodConfig?.previousPeriodStart || "").trim();
+  const previousPeriodEnd = String(periodConfig?.previousPeriodEnd || "").trim();
 
   const periodFeedItems = useMemo(() => {
     if (!effectivePeriodStart || !effectivePeriodEnd) return [];
@@ -4710,6 +4925,23 @@ function DashboardPanel({
       );
     });
   }, [categoryFeed?.items, effectivePeriodEnd, effectivePeriodStart]);
+
+  const previousPeriodFeedItems = useMemo(() => {
+    if (!previousPeriodStart || !previousPeriodEnd) return [];
+    const items = Array.isArray(categoryFeed?.items) ? categoryFeed.items : [];
+    return items.filter((expense) => {
+      const dateIncurred = String(expense?.date_incurred || "").trim();
+      return Boolean(
+        dateIncurred &&
+          dateIncurred >= previousPeriodStart &&
+          dateIncurred <= previousPeriodEnd
+      );
+    });
+  }, [categoryFeed?.items, previousPeriodEnd, previousPeriodStart]);
+
+  const trendSeries = useMemo(() => {
+    return buildDashboardTrendSeries(categoryFeed?.items, viewMode, dashboardReferenceDate);
+  }, [categoryFeed?.items, dashboardReferenceDate, viewMode]);
 
   const categorySplit = useMemo(() => {
     const totals = new Map();
@@ -4735,19 +4967,15 @@ function DashboardPanel({
     for (const expense of periodFeedItems) {
       const amount = parseNumeric(expense?.amount);
       if (amount === null) continue;
-      const memberId = String(expense?.attributed_family_member_id || "").trim();
-      const memberName =
-        String(expense?.attributed_family_member_name || expense?.logged_by_name || "Unknown").trim() ||
-        "Unknown";
-      const key = memberId || normalizeTaxonomyName(memberName) || "unknown";
-      const existing = totals.get(key);
+      const identity = resolveExpensePersonIdentity(expense);
+      const existing = totals.get(identity.key);
       if (existing) {
         existing.total += amount;
         existing.count += 1;
       } else {
-        totals.set(key, {
-          id: memberId || key,
-          name: memberName,
+        totals.set(identity.key, {
+          id: identity.key,
+          name: identity.name,
           total: amount,
           count: 1,
         });
@@ -4779,11 +5007,7 @@ function DashboardPanel({
 
   const periodDayCount = useMemo(() => {
     if (!effectivePeriodStart || !effectivePeriodEnd) return 0;
-    const startDate = new Date(`${effectivePeriodStart}T00:00:00`);
-    const endDate = new Date(`${effectivePeriodEnd}T00:00:00`);
-    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 0;
-    const diffMs = Math.max(endDate.getTime() - startDate.getTime(), 0);
-    return Math.floor(diffMs / 86400000) + 1;
+    return getInclusiveDayCount(effectivePeriodStart, effectivePeriodEnd);
   }, [effectivePeriodEnd, effectivePeriodStart]);
 
   const periodTotalSpend = useMemo(() => {
@@ -4831,38 +5055,6 @@ function DashboardPanel({
     return (recurringSpend / periodTotalSpend) * 100;
   }, [periodTotalSpend, recurringSpend]);
 
-  const previousPeriodStartMonth = useMemo(() => {
-    return shiftMonthKey(trendWindowStartMonth, -monthsBack);
-  }, [monthsBack, trendWindowStartMonth]);
-
-  const previousPeriodEndMonth = useMemo(() => {
-    return shiftMonthKey(trendWindowEndMonth, -monthsBack);
-  }, [monthsBack, trendWindowEndMonth]);
-
-  const previousPeriodRangeStart = useMemo(() => {
-    return buildMonthRange(previousPeriodStartMonth);
-  }, [previousPeriodStartMonth]);
-
-  const previousPeriodRangeEnd = useMemo(() => {
-    return buildMonthRange(previousPeriodEndMonth);
-  }, [previousPeriodEndMonth]);
-
-  const previousPeriodStart = String(previousPeriodRangeStart?.start || "").trim();
-  const previousPeriodEnd = String(previousPeriodRangeEnd?.end || "").trim();
-
-  const previousPeriodFeedItems = useMemo(() => {
-    if (!previousPeriodStart || !previousPeriodEnd) return [];
-    const items = Array.isArray(categoryFeed?.items) ? categoryFeed.items : [];
-    return items.filter((expense) => {
-      const dateIncurred = String(expense?.date_incurred || "").trim();
-      return Boolean(
-        dateIncurred &&
-          dateIncurred >= previousPeriodStart &&
-          dateIncurred <= previousPeriodEnd
-      );
-    });
-  }, [categoryFeed?.items, previousPeriodEnd, previousPeriodStart]);
-
   const previousPeriodTotalSpend = useMemo(() => {
     return Number(
       previousPeriodFeedItems
@@ -4898,8 +5090,7 @@ function DashboardPanel({
     }, 0);
   }, [previousPeriodFeedItems, topCategory?.category]);
 
-  const comparisonLabel =
-    monthsBack === 1 ? "vs previous month" : `vs previous ${monthsBack} months`;
+  const comparisonLabel = String(periodConfig?.comparisonLabel || "vs previous period");
 
   const totalSpendDeltaLabel = useMemo(() => {
     return formatMonthOverMonthDelta(
@@ -4931,23 +5122,21 @@ function DashboardPanel({
     );
   }, [comparisonLabel, dashboardCurrency, previousTopCategorySpend, topCategory]);
 
-  const maxMonthlyTrendTotal = useMemo(() => {
-    if (!monthlyTrendSeries.length) return 1;
-    return Math.max(...monthlyTrendSeries.map((item) => item.total), 1);
-  }, [monthlyTrendSeries]);
+  const maxTrendTotal = useMemo(() => {
+    if (!trendSeries.length) return 1;
+    return Math.max(...trendSeries.map((item) => Number(item?.total || 0)), 1);
+  }, [trendSeries]);
 
-  const monthlyPatternBars = useMemo(() => {
-    return monthlyTrendSeries.map((item) => {
-      const rawHeight =
-        maxMonthlyTrendTotal > 0 ? (Number(item.total || 0) / maxMonthlyTrendTotal) * 100 : 0;
+  const trendBars = useMemo(() => {
+    return trendSeries.map((item) => {
+      const rawHeight = maxTrendTotal > 0 ? (Number(item.total || 0) / maxTrendTotal) * 100 : 0;
       const height = Number(item.total || 0) <= 0 ? 0 : Math.max(rawHeight, 8);
       return {
         ...item,
         height,
-        label: formatMonthYearValue(item.month, { monthStyle: "short", separator: " " }),
       };
     });
-  }, [maxMonthlyTrendTotal, monthlyTrendSeries]);
+  }, [maxTrendTotal, trendSeries]);
 
   const categoryPie = useMemo(() => {
     const split = Array.isArray(categorySplit) ? categorySplit : [];
@@ -5008,8 +5197,8 @@ function DashboardPanel({
 
   const periodSubtitle = useMemo(() => {
     if (!effectivePeriodStart || !effectivePeriodEnd) return "Current month overview";
-    return `${formatDateValue(effectivePeriodStart)} - ${formatDateValue(effectivePeriodEnd)}`;
-  }, [effectivePeriodEnd, effectivePeriodStart]);
+    return `${periodConfig.modeLabel}: ${formatDateValue(effectivePeriodStart)} - ${formatDateValue(effectivePeriodEnd)}`;
+  }, [effectivePeriodEnd, effectivePeriodStart, periodConfig.modeLabel]);
 
   const categoryEntriesByKey = useMemo(() => {
     const grouped = new Map();
@@ -5029,29 +5218,11 @@ function DashboardPanel({
   const personEntriesByKey = useMemo(() => {
     const grouped = new Map();
     for (const expense of periodFeedItems) {
-      const memberId = String(expense?.attributed_family_member_id || "").trim();
-      const memberLabel = String(
-        expense?.attributed_family_member_name || expense?.logged_by_name || "Unknown"
-      ).trim();
-      const normalizedMemberKey = normalizeTaxonomyName(memberLabel) || "";
-
-      const keys = [];
-      if (memberId) {
-        keys.push(memberId);
+      const identity = resolveExpensePersonIdentity(expense);
+      if (!grouped.has(identity.key)) {
+        grouped.set(identity.key, []);
       }
-      if (normalizedMemberKey) {
-        keys.push(normalizedMemberKey);
-      }
-      if (!keys.length) {
-        keys.push("unknown");
-      }
-
-      for (const key of keys) {
-        if (!grouped.has(key)) {
-          grouped.set(key, []);
-        }
-        grouped.get(key).push(expense);
-      }
+      grouped.get(identity.key).push(expense);
     }
     for (const entries of grouped.values()) {
       entries.sort((left, right) => {
@@ -5072,10 +5243,7 @@ function DashboardPanel({
   }
 
   function handleTogglePerson(person) {
-    const key =
-      String(person?.id || "").trim() ||
-      normalizeTaxonomyName(String(person?.name || "").trim()) ||
-      "";
+    const key = String(person?.id || "").trim() || normalizeTaxonomyName(String(person?.name || "").trim()) || "";
     if (!key) return;
     setExpandedPersonKey((previous) => (previous === key ? "" : key));
   }
@@ -5094,15 +5262,13 @@ function DashboardPanel({
           </p>
         </div>
         <label className="insights-window-label">
-          Trend Window
-          <select
-            value={monthsBack}
-            onChange={(e) => setMonthsBack(Number(e.target.value))}
-          >
-            <option value={1}>This month</option>
-            <option value={3}>Last 3 months</option>
-            <option value={6}>Last 6 months</option>
-            <option value={12}>Last 12 months</option>
+          View
+          <select value={viewMode} onChange={(e) => setViewMode(String(e.target.value || "month"))}>
+            {DASHBOARD_VIEW_OPTIONS.map((option) => (
+              <option value={option.id} key={option.id}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </label>
       </div>
@@ -5122,9 +5288,7 @@ function DashboardPanel({
           <div className="stats-grid insights-stats-row">
             <article className="stat-card insights-stat-card">
               <p className="insights-stat-label">Total Spent</p>
-              <p className="insights-stat-value">
-                {formatCurrencyValue(periodTotalSpend, dashboardCurrency)}
-              </p>
+              <p className="insights-stat-value">{formatCurrencyValue(periodTotalSpend, dashboardCurrency)}</p>
               <p className="insights-stat-sub">{periodExpenseCount} transactions</p>
               <p className="insights-stat-sub insights-stat-delta">{totalSpendDeltaLabel}</p>
             </article>
@@ -5136,9 +5300,7 @@ function DashboardPanel({
             <article className="stat-card insights-stat-card">
               <p className="insights-stat-label">Top Category</p>
               <p className="insights-stat-value is-title">{topCategory.category || "No category"}</p>
-              <p className="insights-stat-sub">
-                {formatCurrencyValue(topCategory.total || 0, dashboardCurrency)}
-              </p>
+              <p className="insights-stat-sub">{formatCurrencyValue(topCategory.total || 0, dashboardCurrency)}</p>
               <p className="insights-stat-sub insights-stat-delta">{topCategoryDeltaLabel}</p>
             </article>
             <article className="stat-card insights-stat-card">
@@ -5152,23 +5314,23 @@ function DashboardPanel({
           <div className="result-grid dashboard-grid insights-dashboard-grid">
             <div className="insights-layout-main">
               <article className="result-card insights-result-card insights-card-daily">
-                <h3>Month-on-Month Spending Pattern</h3>
-                {monthlyPatternBars.length === 0 ? (
-                  <p>No monthly spend data for this window.</p>
+                <h3>{periodConfig.trendTitle}</h3>
+                {trendBars.length === 0 ? (
+                  <p>{periodConfig.trendEmptyLabel}</p>
                 ) : (
                   <div
                     className="insights-monthly-pattern"
                     role="img"
-                    aria-label="Month-on-month spending vertical bar chart"
+                    aria-label={periodConfig.chartAriaLabel}
                   >
                     <div className="insights-monthly-bars">
-                      {monthlyPatternBars.map((item) => (
-                        <div className="insights-month-bar" key={item.month}>
+                      {trendBars.map((item) => (
+                        <div className="insights-month-bar" key={item.key}>
                           <div className="insights-month-bar-track">
                             <div
                               className="insights-month-bar-fill"
                               style={{ height: `${item.height}%` }}
-                              title={`${item.label}: ${formatCurrencyValue(item.total, dashboardCurrency)}`}
+                              title={`${item.tooltip}: ${formatCurrencyValue(item.total, dashboardCurrency)}`}
                             />
                           </div>
                           <span className="insights-month-bar-label">{item.label}</span>
@@ -5181,7 +5343,6 @@ function DashboardPanel({
                   </div>
                 )}
               </article>
-
             </div>
 
             <div className="insights-category-grid">
@@ -5330,25 +5491,8 @@ function DashboardPanel({
                         String(item.id || "").trim() ||
                         normalizeTaxonomyName(item.name) ||
                         `person-${index}`;
-                      const normalizedPersonName = normalizeTaxonomyName(item.name);
                       const isExpanded = expandedPersonKey === personKey;
-                      const entriesById = personEntriesByKey.get(personKey) || [];
-                      const entriesByName = normalizedPersonName
-                        ? personEntriesByKey.get(normalizedPersonName) || []
-                        : [];
-                      const personEntries =
-                        entriesById.length > 0 && entriesByName.length > 0
-                          ? Array.from(
-                              new Map(
-                                [...entriesById, ...entriesByName].map((expense) => [
-                                  String(expense?.id || ""),
-                                  expense,
-                                ])
-                              ).values()
-                            )
-                          : entriesById.length > 0
-                            ? entriesById
-                            : entriesByName;
+                      const personEntries = personEntriesByKey.get(personKey) || [];
                       const panelId = `person-expense-panel-${index}`;
                       const hiddenEntriesCount = Math.max(Number(item.count || 0) - personEntries.length, 0);
 
@@ -6477,7 +6621,7 @@ export default function App() {
 
   return (
     <RuntimeErrorBoundary>
-      <main className="app-shell app-shell-unified">
+      <main className={activeTab === "insights" ? "app-shell app-shell-unified app-shell-dashboard" : "app-shell app-shell-unified"}>
         <ToastNotice message={globalNotice} placement="top-right" />
         <Header
           user={auth.user}
@@ -6635,3 +6779,4 @@ function Header({ user, onQuickAdd, onOpenSettings, settingsActive = false, onLo
     </header>
   );
 }
+
