@@ -6093,7 +6093,7 @@ function AdminPanel({ token }) {
                   <tr>
                     <th>User</th>
                     <th>Household</th>
-                    <th>Role</th>
+                    <th>Access</th>
                     <th>Last Login</th>
                     <th>Entries</th>
                   </tr>
@@ -6109,9 +6109,12 @@ function AdminPanel({ token }) {
                       </td>
                       <td>{user.household_name}</td>
                       <td>
-                        <span className={user.is_active ? "status-pill confirmed compact" : "status-pill draft compact"}>
-                          {user.role}
-                        </span>
+                        <div className="admin-badge-row">
+                          <span className={`status-pill role-${user.role}`}>{user.role}</span>
+                          <span className={user.is_active ? "status-pill active-state" : "status-pill inactive-state"}>
+                            {user.is_active ? "active" : "inactive"}
+                          </span>
+                        </div>
                       </td>
                       <td>{user.last_login_at ? formatDateTimeValue(user.last_login_at) : "Never"}</td>
                       <td>{user.expense_entries_count}</td>
@@ -6124,6 +6127,12 @@ function AdminPanel({ token }) {
               {users.map((user) => (
                 <article className="mobile-data-card" key={`admin-user-${user.user_id}`}>
                   <p className="mobile-data-card-title">{user.full_name}</p>
+                  <div className="admin-badge-row">
+                    <span className={`status-pill role-${user.role}`}>{user.role}</span>
+                    <span className={user.is_active ? "status-pill active-state" : "status-pill inactive-state"}>
+                      {user.is_active ? "active" : "inactive"}
+                    </span>
+                  </div>
                   <div className="mobile-data-row">
                     <span className="mobile-data-label">Email</span>
                     <span className="mobile-data-value">{user.email}</span>
@@ -6154,7 +6163,7 @@ function AdminPanel({ token }) {
                 <h3>Household-level member and expense counts</h3>
               </div>
             </div>
-            <div className="table-wrap">
+            <div className="table-wrap desktop-table-only">
               <table className="analytics-table">
                 <thead>
                   <tr>
@@ -6178,6 +6187,29 @@ function AdminPanel({ token }) {
                 </tbody>
               </table>
             </div>
+            <div className="mobile-data-list mobile-cards-only">
+              {households.map((household) => (
+                <article className="mobile-data-card" key={`admin-household-${household.household_id}`}>
+                  <p className="mobile-data-card-title">{household.household_name}</p>
+                  <div className="mobile-data-row">
+                    <span className="mobile-data-label">Users</span>
+                    <span className="mobile-data-value">{household.user_count}</span>
+                  </div>
+                  <div className="mobile-data-row">
+                    <span className="mobile-data-label">Family Members</span>
+                    <span className="mobile-data-value">{household.family_member_count}</span>
+                  </div>
+                  <div className="mobile-data-row">
+                    <span className="mobile-data-label">Entries</span>
+                    <span className="mobile-data-value">{household.expense_count}</span>
+                  </div>
+                  <div className="mobile-data-row">
+                    <span className="mobile-data-label">Created</span>
+                    <span className="mobile-data-value">{formatDateValue(household.created_at)}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
           </article>
 
           <article className="admin-section-card">
@@ -6197,7 +6229,7 @@ function AdminPanel({ token }) {
             </div>
             {downloadError ? <p className="form-error">{downloadError}</p> : null}
             {downloadNotice ? <p className="form-ok">{downloadNotice}</p> : null}
-            <div className="table-wrap">
+            <div className="table-wrap desktop-table-only">
               <table className="analytics-table">
                 <thead>
                   <tr>
@@ -6226,6 +6258,25 @@ function AdminPanel({ token }) {
                 </tbody>
               </table>
             </div>
+            <div className="mobile-data-list mobile-cards-only">
+              {tables.map((table) => (
+                <article className="mobile-data-card" key={`admin-table-${table.table_name}`}>
+                  <p className="mobile-data-card-title">{table.table_name}</p>
+                  <div className="mobile-data-row">
+                    <span className="mobile-data-label">Rows</span>
+                    <span className="mobile-data-value">{table.row_count}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-ghost admin-table-download admin-table-download-mobile"
+                    onClick={() => handleDownloadTable(table.table_name)}
+                    disabled={tableDownloadInFlight === table.table_name}
+                  >
+                    {tableDownloadInFlight === table.table_name ? "Downloading..." : "Download CSV"}
+                  </button>
+                </article>
+              ))}
+            </div>
           </article>
 
           <article className="admin-section-card">
@@ -6236,34 +6287,51 @@ function AdminPanel({ token }) {
               </div>
             </div>
 
-            <div className="admin-relations-list">
-              {schemaRelations.map((relation) => (
-                <p className="admin-relation-pill" key={`${relation.from_table}-${relation.from_column}-${relation.to_table}-${relation.to_column}`}>
-                  <strong>{relation.from_table}</strong>.{relation.from_column}
-                  <span aria-hidden="true"> &#8594; </span>
-                  <strong>{relation.to_table}</strong>.{relation.to_column}
-                </p>
-              ))}
+            <div className="admin-schema-overview">
+              <article className="admin-mini-stat">
+                <span>Tables</span>
+                <strong>{schemaTables.length}</strong>
+              </article>
+              <article className="admin-mini-stat">
+                <span>Relationships</span>
+                <strong>{schemaRelations.length}</strong>
+              </article>
             </div>
 
-            <div className="admin-schema-grid">
-              {schemaTables.map((table) => (
-                <article className="admin-schema-card" key={table.table_name}>
-                  <p className="admin-schema-title">{table.table_name}</p>
-                  <div className="admin-schema-columns">
-                    {table.columns.slice(0, 8).map((column) => (
-                      <code key={`${table.table_name}-${column.name}`}>
-                        {column.is_primary_key ? "PK " : ""}
-                        {column.name}
-                      </code>
-                    ))}
-                    {table.columns.length > 8 ? (
-                      <small>+{table.columns.length - 8} more columns</small>
-                    ) : null}
-                  </div>
-                </article>
-              ))}
-            </div>
+            <details className="admin-disclosure" open>
+              <summary>Relationships</summary>
+              <div className="admin-relations-list">
+                {schemaRelations.map((relation) => (
+                  <p className="admin-relation-pill" key={`${relation.from_table}-${relation.from_column}-${relation.to_table}-${relation.to_column}`}>
+                    <strong>{relation.from_table}</strong>.{relation.from_column}
+                    <span aria-hidden="true"> &#8594; </span>
+                    <strong>{relation.to_table}</strong>.{relation.to_column}
+                  </p>
+                ))}
+              </div>
+            </details>
+
+            <details className="admin-disclosure">
+              <summary>Table Structure</summary>
+              <div className="admin-schema-grid">
+                {schemaTables.map((table) => (
+                  <article className="admin-schema-card" key={table.table_name}>
+                    <p className="admin-schema-title">{table.table_name}</p>
+                    <div className="admin-schema-columns">
+                      {table.columns.slice(0, 8).map((column) => (
+                        <code key={`${table.table_name}-${column.name}`}>
+                          {column.is_primary_key ? "PK " : ""}
+                          {column.name}
+                        </code>
+                      ))}
+                      {table.columns.length > 8 ? (
+                        <small>+{table.columns.length - 8} more columns</small>
+                      ) : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </details>
           </article>
         </>
       )}
